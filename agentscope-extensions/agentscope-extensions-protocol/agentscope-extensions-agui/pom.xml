@@ -26,6 +26,7 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
     <artifactId>agentscope-extensions-agui</artifactId>
+    <version>${revision}-vtradex</version>
 
     <name>AgentScope Java - Extensions - AG-UI</name>
     <description>AgentScope Extensions - AG-UI Protocol Support</description>

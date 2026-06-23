@@ -33,34 +33,41 @@ public class RunAgentInput {
 
     private final String threadId;
     private final String runId;
+    private final String parentRunId;
     private final List<AguiMessage> messages;
     private final List<AguiTool> tools;
     private final List<AguiContext> context;
     private final Map<String, Object> state;
     private final Map<String, Object> forwardedProps;
+    private final List<ResumeItem> resume;
 
     /**
-     * Creates a new RunAgentInput.
+     * Creates a new RunAgentInput with all fields.
      *
      * @param threadId The thread ID for this conversation
      * @param runId The unique run ID
+     * @param parentRunId Optional parent run ID for branching/time travel
      * @param messages The conversation messages
      * @param tools Frontend-provided tools
      * @param context Additional context information
      * @param state Initial state to load
      * @param forwardedProps Additional properties to forward
+     * @param resume Optional resume items for interrupt protocol
      */
     @JsonCreator
     public RunAgentInput(
             @JsonProperty("threadId") String threadId,
             @JsonProperty("runId") String runId,
+            @JsonProperty("parentRunId") String parentRunId,
             @JsonProperty("messages") List<AguiMessage> messages,
             @JsonProperty("tools") List<AguiTool> tools,
             @JsonProperty("context") List<AguiContext> context,
             @JsonProperty("state") Map<String, Object> state,
-            @JsonProperty("forwardedProps") Map<String, Object> forwardedProps) {
+            @JsonProperty("forwardedProps") Map<String, Object> forwardedProps,
+            @JsonProperty("resume") List<ResumeItem> resume) {
         this.threadId = Objects.requireNonNull(threadId, "threadId cannot be null");
         this.runId = Objects.requireNonNull(runId, "runId cannot be null");
+        this.parentRunId = parentRunId; // Optional
         this.messages =
                 messages != null ? Collections.unmodifiableList(messages) : Collections.emptyList();
         this.tools = tools != null ? Collections.unmodifiableList(tools) : Collections.emptyList();
@@ -74,6 +81,30 @@ public class RunAgentInput {
                 forwardedProps != null
                         ? Collections.unmodifiableMap(new HashMap<>(forwardedProps))
                         : Collections.emptyMap();
+        this.resume =
+                resume != null ? Collections.unmodifiableList(resume) : Collections.emptyList();
+    }
+
+    /**
+     * Creates a new RunAgentInput without parentRunId and resume (backward compatible).
+     *
+     * @param threadId The thread ID for this conversation
+     * @param runId The unique run ID
+     * @param messages The conversation messages
+     * @param tools Frontend-provided tools
+     * @param context Additional context information
+     * @param state Initial state to load
+     * @param forwardedProps Additional properties to forward
+     */
+    public RunAgentInput(
+            String threadId,
+            String runId,
+            List<AguiMessage> messages,
+            List<AguiTool> tools,
+            List<AguiContext> context,
+            Map<String, Object> state,
+            Map<String, Object> forwardedProps) {
+        this(threadId, runId, null, messages, tools, context, state, forwardedProps, null);
     }
 
     /**
@@ -92,6 +123,15 @@ public class RunAgentInput {
      */
     public String getRunId() {
         return runId;
+    }
+
+    /**
+     * Get the parent run ID (for branching/time travel).
+     *
+     * @return The parent run ID, or null if not set
+     */
+    public String getParentRunId() {
+        return parentRunId;
     }
 
     /**
@@ -137,6 +177,15 @@ public class RunAgentInput {
      */
     public Map<String, Object> getForwardedProps() {
         return forwardedProps;
+    }
+
+    /**
+     * Get the resume items for interrupt protocol.
+     *
+     * @return The resume items as an immutable list, empty if none
+     */
+    public List<ResumeItem> getResume() {
+        return resume;
     }
 
     /**
@@ -196,12 +245,23 @@ public class RunAgentInput {
         return state != null && !state.isEmpty();
     }
 
+    /**
+     * Check if there are resume items (interrupt protocol).
+     *
+     * @return true if resume items are present
+     */
+    public boolean hasResume() {
+        return resume != null && !resume.isEmpty();
+    }
+
     @Override
     public String toString() {
         return "RunAgentInput{threadId='"
                 + threadId
                 + "', runId='"
                 + runId
+                + "', parentRunId='"
+                + parentRunId
                 + "', messages="
                 + messages.size()
                 + ", tools="
@@ -212,6 +272,8 @@ public class RunAgentInput {
                 + state.size()
                 + ", forwardedProps="
                 + forwardedProps.size()
+                + ", resume="
+                + resume.size()
                 + "}";
     }
 
@@ -230,11 +292,13 @@ public class RunAgentInput {
     public static class Builder {
         private String threadId;
         private String runId;
+        private String parentRunId;
         private List<AguiMessage> messages;
         private List<AguiTool> tools;
         private List<AguiContext> context;
         private Map<String, Object> state;
         private Map<String, Object> forwardedProps;
+        private List<ResumeItem> resume;
 
         public Builder threadId(String threadId) {
             this.threadId = threadId;
@@ -243,6 +307,11 @@ public class RunAgentInput {
 
         public Builder runId(String runId) {
             this.runId = runId;
+            return this;
+        }
+
+        public Builder parentRunId(String parentRunId) {
+            this.parentRunId = parentRunId;
             return this;
         }
 
@@ -271,9 +340,15 @@ public class RunAgentInput {
             return this;
         }
 
+        public Builder resume(List<ResumeItem> resume) {
+            this.resume = resume;
+            return this;
+        }
+
         public RunAgentInput build() {
             return new RunAgentInput(
-                    threadId, runId, messages, tools, context, state, forwardedProps);
+                    threadId, runId, parentRunId, messages, tools, context, state, forwardedProps,
+                    resume);
         }
     }
 }

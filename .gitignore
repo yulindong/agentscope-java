@@ -88,3 +88,7 @@ logs/
 
 ## oh-my-claudecode
 .omc/
+
+## graphify
+graphify-out/
+/.qoder/rules/maven_env.md

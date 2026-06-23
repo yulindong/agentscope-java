@@ -30,6 +30,21 @@ public enum AguiEventType {
     RUN_FINISHED,
 
     /**
+     * Indicates that an error occurred during an agent run.
+     */
+    RUN_ERROR,
+
+    /**
+     * Indicates the start of a step within an agent run.
+     */
+    STEP_STARTED,
+
+    /**
+     * Indicates the completion of a step within an agent run.
+     */
+    STEP_FINISHED,
+
+    /**
      * Indicates the start of a text message.
      */
     TEXT_MESSAGE_START,
@@ -75,6 +90,21 @@ public enum AguiEventType {
     STATE_DELTA,
 
     /**
+     * Contains a snapshot of all messages in a conversation.
+     */
+    MESSAGES_SNAPSHOT,
+
+    /**
+     * Contains a complete snapshot of an activity message.
+     */
+    ACTIVITY_SNAPSHOT,
+
+    /**
+     * Contains incremental updates to an activity message using JSON Patch.
+     */
+    ACTIVITY_DELTA,
+
+    /**
      * A raw event with custom data.
      */
     RAW,
@@ -111,5 +141,10 @@ public enum AguiEventType {
     /**
      * Indicates the end of a reasoning/thinking phase.
      */
-    REASONING_END
+    REASONING_END,
+
+    /**
+     * Attaches an encrypted value to a reasoning message or tool call.
+     */
+    REASONING_ENCRYPTED_VALUE
 }

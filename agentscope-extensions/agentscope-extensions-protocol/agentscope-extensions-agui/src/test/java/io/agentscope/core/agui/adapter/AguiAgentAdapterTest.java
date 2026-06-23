@@ -431,7 +431,7 @@ class AguiAgentAdapterTest {
                         .orElse(null);
 
         assertNotNull(errorEvent, "Should have error Raw event");
-        Map<String, Object> errorData = (Map<String, Object>) errorEvent.rawEvent();
+        Map<String, Object> errorData = (Map<String, Object>) errorEvent.event();
         assertTrue(errorData.containsKey("error"));
 
         assertInstanceOf(AguiEvent.RunFinished.class, events.get(events.size() - 1));

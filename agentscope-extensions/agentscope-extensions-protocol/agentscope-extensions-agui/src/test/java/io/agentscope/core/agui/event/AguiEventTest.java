@@ -674,14 +674,14 @@ class AguiEventTest {
                     new AguiEvent.Raw("thread-1", "run-1", Map.of("custom", "data", "count", 123));
 
             assertEquals(AguiEventType.RAW, event.getType());
-            assertNotNull(event.rawEvent());
+            assertNotNull(event.event());
         }
 
         @Test
         void testWithNullRawEvent() {
             AguiEvent.Raw event = new AguiEvent.Raw("thread-1", "run-1", null);
 
-            assertNull(event.rawEvent());
+            assertNull(event.event());
         }
 
         @Test
@@ -696,7 +696,7 @@ class AguiEventTest {
                             Map.of("reason", "Timeout"));
             AguiEvent.Raw event = new AguiEvent.Raw("thread-1", "run-1", complexData);
 
-            assertTrue(event.rawEvent() instanceof Map);
+            assertTrue(event.event() instanceof Map);
         }
 
         @Test
@@ -706,7 +706,7 @@ class AguiEventTest {
 
             String str = event.toString();
             assertTrue(str.contains("thread-1"));
-            assertTrue(str.contains("rawEvent"));
+            assertTrue(str.contains("event"));
         }
 
         @Test
@@ -729,7 +729,7 @@ class AguiEventTest {
 
             String json = JsonUtils.getJsonCodec().toJson(event);
             checkExistAndDuplicate(json, "\"type\":\"RAW\"");
-            assertTrue(json.contains("\"rawEvent\""));
+            assertTrue(json.contains("\"event\""));
 
             AguiEvent deserialized = JsonUtils.getJsonCodec().fromJson(json, AguiEvent.class);
             assertTrue(deserialized instanceof AguiEvent.Raw);
@@ -833,25 +833,44 @@ class AguiEventTest {
 
         @Test
         void testAllEventTypesExist() {
-            // Verify all expected event types exist
+            // Verify all 26 expected event types exist per AG-UI protocol spec
+            // Lifecycle events
             assertNotNull(AguiEventType.RUN_STARTED);
             assertNotNull(AguiEventType.RUN_FINISHED);
+            assertNotNull(AguiEventType.RUN_ERROR);
+            assertNotNull(AguiEventType.STEP_STARTED);
+            assertNotNull(AguiEventType.STEP_FINISHED);
+            // Text message events
             assertNotNull(AguiEventType.TEXT_MESSAGE_START);
             assertNotNull(AguiEventType.TEXT_MESSAGE_CONTENT);
             assertNotNull(AguiEventType.TEXT_MESSAGE_END);
+            // Tool call events
             assertNotNull(AguiEventType.TOOL_CALL_START);
             assertNotNull(AguiEventType.TOOL_CALL_ARGS);
             assertNotNull(AguiEventType.TOOL_CALL_END);
             assertNotNull(AguiEventType.TOOL_CALL_RESULT);
+            // State management events
             assertNotNull(AguiEventType.STATE_SNAPSHOT);
             assertNotNull(AguiEventType.STATE_DELTA);
+            assertNotNull(AguiEventType.MESSAGES_SNAPSHOT);
+            assertNotNull(AguiEventType.ACTIVITY_SNAPSHOT);
+            assertNotNull(AguiEventType.ACTIVITY_DELTA);
+            // Special events
             assertNotNull(AguiEventType.RAW);
             assertNotNull(AguiEventType.CUSTOM);
+            // Reasoning events
+            assertNotNull(AguiEventType.REASONING_START);
+            assertNotNull(AguiEventType.REASONING_MESSAGE_START);
+            assertNotNull(AguiEventType.REASONING_MESSAGE_CONTENT);
+            assertNotNull(AguiEventType.REASONING_MESSAGE_END);
+            assertNotNull(AguiEventType.REASONING_MESSAGE_CHUNK);
+            assertNotNull(AguiEventType.REASONING_END);
+            assertNotNull(AguiEventType.REASONING_ENCRYPTED_VALUE);
         }
 
         @Test
         void testEventTypeCount() {
-            assertEquals(19, AguiEventType.values().length);
+            assertEquals(26, AguiEventType.values().length);
         }
 
         @Test

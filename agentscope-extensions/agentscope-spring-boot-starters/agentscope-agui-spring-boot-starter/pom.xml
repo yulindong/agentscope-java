@@ -26,6 +26,7 @@
     </parent>
 
     <artifactId>agentscope-agui-spring-boot-starter</artifactId>
+    <version>${revision}-vtradex</version>
     <name>AgentScope Java AG-UI - Spring Boot Starter</name>
     <description>Spring Boot starter for integrating AgentScope Java AG-UI (supports both MVC and WebFlux)</description>
 
