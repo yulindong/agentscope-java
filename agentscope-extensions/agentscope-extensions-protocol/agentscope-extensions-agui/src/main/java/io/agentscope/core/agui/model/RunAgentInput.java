@@ -347,7 +347,14 @@ public class RunAgentInput {
 
         public RunAgentInput build() {
             return new RunAgentInput(
-                    threadId, runId, parentRunId, messages, tools, context, state, forwardedProps,
+                    threadId,
+                    runId,
+                    parentRunId,
+                    messages,
+                    tools,
+                    context,
+                    state,
+                    forwardedProps,
                     resume);
         }
     }

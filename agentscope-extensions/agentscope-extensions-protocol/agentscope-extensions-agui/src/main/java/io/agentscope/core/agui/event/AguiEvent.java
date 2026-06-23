@@ -20,7 +20,6 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
-import com.fasterxml.jackson.annotation.JsonValue;
 import io.agentscope.core.agui.model.AguiMessage;
 import io.agentscope.core.agui.model.RunAgentInput;
 import java.util.Collections;
@@ -184,8 +183,7 @@ public sealed interface AguiEvent
      * <p>Per AG-UI spec: includes optional result for completion payload and
      * optional outcome for interrupt-aware lifecycle support.
      */
-    record RunFinished(
-            String threadId, String runId, Object result, RunFinishedOutcome outcome)
+    record RunFinished(String threadId, String runId, Object result, RunFinishedOutcome outcome)
             implements AguiEvent {
 
         /**
@@ -259,8 +257,7 @@ public sealed interface AguiEvent
          */
         record Interrupt(List<InterruptItem> interrupts) implements RunFinishedOutcome {
             @JsonCreator
-            public Interrupt(
-                    @JsonProperty("interrupts") List<InterruptItem> interrupts) {
+            public Interrupt(@JsonProperty("interrupts") List<InterruptItem> interrupts) {
                 this.interrupts =
                         interrupts != null
                                 ? Collections.unmodifiableList(interrupts)
@@ -533,7 +530,10 @@ public sealed interface AguiEvent
      * <p>Per AG-UI spec: includes optional parentMessageId.
      */
     record ToolCallStart(
-            String threadId, String runId, String toolCallId, String toolCallName,
+            String threadId,
+            String runId,
+            String toolCallId,
+            String toolCallName,
             String parentMessageId)
             implements AguiEvent {
 
@@ -554,7 +554,8 @@ public sealed interface AguiEvent
         /**
          * Convenience constructor without parentMessageId.
          */
-        public ToolCallStart(String threadId, String runId, String toolCallId, String toolCallName) {
+        public ToolCallStart(
+                String threadId, String runId, String toolCallId, String toolCallName) {
             this(threadId, runId, toolCallId, toolCallName, null);
         }
 
@@ -811,8 +812,12 @@ public sealed interface AguiEvent
      * (e.g., PLAN, SEARCH) for front-end display.
      */
     record ActivitySnapshot(
-            String threadId, String runId, String messageId, String activityType,
-            Map<String, Object> content, Boolean replace)
+            String threadId,
+            String runId,
+            String messageId,
+            String activityType,
+            Map<String, Object> content,
+            Boolean replace)
             implements AguiEvent {
 
         @JsonCreator
@@ -838,7 +843,10 @@ public sealed interface AguiEvent
          * Convenience constructor with required fields only.
          */
         public ActivitySnapshot(
-                String threadId, String runId, String messageId, String activityType,
+                String threadId,
+                String runId,
+                String messageId,
+                String activityType,
                 Map<String, Object> content) {
             this(threadId, runId, messageId, activityType, content, null);
         }
@@ -866,7 +874,10 @@ public sealed interface AguiEvent
      * using RFC 6902 JSON Patch operations.
      */
     record ActivityDelta(
-            String threadId, String runId, String messageId, String activityType,
+            String threadId,
+            String runId,
+            String messageId,
+            String activityType,
             List<JsonPatchOperation> patch)
             implements AguiEvent {
 
@@ -984,8 +995,7 @@ public sealed interface AguiEvent
      *
      * <p>According to AG-UI Reasoning draft specification.
      */
-    record ReasoningStart(String threadId, String runId, String messageId)
-            implements AguiEvent {
+    record ReasoningStart(String threadId, String runId, String messageId) implements AguiEvent {
 
         @JsonCreator
         public ReasoningStart(
@@ -1196,8 +1206,7 @@ public sealed interface AguiEvent
      * by entityId and sets its encryptedValue field. Supports ZDR (Zero Data Retention) compliance.
      */
     record ReasoningEncryptedValue(
-            String threadId, String runId, String subtype, String entityId,
-            String encryptedValue)
+            String threadId, String runId, String subtype, String entityId, String encryptedValue)
             implements AguiEvent {
 
         @JsonCreator
