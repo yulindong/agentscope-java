@@ -17,6 +17,7 @@ package io.agentscope.core.agui.event;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
@@ -132,6 +133,7 @@ public sealed interface AguiEvent
      * <p>Per AG-UI spec: includes optional parentRunId for branching/time travel
      * and optional input to capture the exact agent input payload.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record RunStarted(String threadId, String runId, String parentRunId, RunAgentInput input)
             implements AguiEvent {
 
@@ -183,6 +185,7 @@ public sealed interface AguiEvent
      * <p>Per AG-UI spec: includes optional result for completion payload and
      * optional outcome for interrupt-aware lifecycle support.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record RunFinished(String threadId, String runId, Object result, RunFinishedOutcome outcome)
             implements AguiEvent {
 
@@ -271,6 +274,7 @@ public sealed interface AguiEvent
      *
      * <p>Per AG-UI interrupt protocol specification.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record InterruptItem(
             String id,
             String reason,
@@ -312,6 +316,7 @@ public sealed interface AguiEvent
      * <p>Per AG-UI spec: signals an error during an agent run, causing the run
      * to terminate prematurely.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record RunError(String threadId, String runId, String message, String code)
             implements AguiEvent {
 
@@ -529,6 +534,7 @@ public sealed interface AguiEvent
      *
      * <p>Per AG-UI spec: includes optional parentMessageId.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record ToolCallStart(
             String threadId,
             String runId,
@@ -646,6 +652,7 @@ public sealed interface AguiEvent
     /**
      * Event containing the result of a tool call.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record ToolCallResult(
             String threadId,
             String runId,
@@ -811,6 +818,7 @@ public sealed interface AguiEvent
      * <p>Per AG-UI spec: delivers a complete snapshot of an activity message
      * (e.g., PLAN, SEARCH) for front-end display.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record ActivitySnapshot(
             String threadId,
             String runId,
@@ -918,6 +926,7 @@ public sealed interface AguiEvent
      *
      * <p>Per AG-UI spec: field name is "event" (not "rawEvent"), with optional "source".
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record Raw(String threadId, String runId, Object event, String source) implements AguiEvent {
 
         @JsonCreator
@@ -959,6 +968,7 @@ public sealed interface AguiEvent
      * The Custom event provides an extension mechanism for implementing
      * features not covered by the standard event types.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record Custom(String threadId, String runId, String name, Object value) implements AguiEvent {
 
         @JsonCreator
@@ -1134,6 +1144,7 @@ public sealed interface AguiEvent
      *
      * <p>According to AG-UI Reasoning draft specification.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record ReasoningMessageChunk(String threadId, String runId, String messageId, String delta)
             implements AguiEvent {
 
@@ -1245,6 +1256,7 @@ public sealed interface AguiEvent
      * events for
      * incremental state updates.
      */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
     record JsonPatchOperation(String op, String path, Object value, String from) {
 
         @JsonCreator

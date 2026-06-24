@@ -133,7 +133,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -536,18 +535,22 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
     }
 
     @Override
-    protected Msg seedSystemMsg(Object callExectution) {
+    protected Mono<Msg> seedSystemMsg(Object callExectution) {
         RuntimeContext rc =
                 callExectution instanceof CallExecution ce ? ce.rc : getRuntimeContext();
         String base = sysPrompt != null ? sysPrompt.trim() : "";
-        String prompt = applySystemPromptMiddlewares(base, rc);
-        if (prompt == null || prompt.isEmpty()) {
-            return null;
-        }
-        return SystemMessage.builder()
-                .name("system")
-                .content(TextBlock.builder().text(prompt).build())
-                .build();
+        return applySystemPromptMiddlewares(base, rc)
+                .flatMap(
+                        prompt -> {
+                            if (prompt == null || prompt.isEmpty()) {
+                                return Mono.<Msg>empty();
+                            }
+                            return Mono.just(
+                                    SystemMessage.builder()
+                                            .name("system")
+                                            .content(TextBlock.builder().text(prompt).build())
+                                            .build());
+                        });
     }
 
     @Override
@@ -555,9 +558,9 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
         return callScope instanceof CallExecution ce ? ce.state : getAgentState();
     }
 
-    private String applySystemPromptMiddlewares(String prompt, RuntimeContext ctx) {
+    private Mono<String> applySystemPromptMiddlewares(String prompt, RuntimeContext ctx) {
         if (middlewares.isEmpty()) {
-            return prompt;
+            return Mono.just(prompt);
         }
         // Only build a reactive chain if at least one middleware overrides onSystemPrompt
         // (the default implementation is identity). This avoids an unnecessary block() call
@@ -582,13 +585,13 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
             }
         }
         if (!hasOverride) {
-            return prompt;
+            return Mono.just(prompt);
         }
         Mono<String> result = Mono.just(prompt);
         for (MiddlewareBase mw : middlewares) {
             result = result.flatMap(p -> mw.onSystemPrompt(this, ctx, p));
         }
-        return result.block();
+        return result;
     }
 
     @Override
@@ -2091,8 +2094,8 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                 ReasoningContext context, ModelCallInput mci, boolean withToolEvents) {
 
             String replyId = UUID.randomUUID().toString().replace("-", "");
-            AtomicBoolean textStarted = new AtomicBoolean(false);
-            AtomicBoolean thinkingStarted = new AtomicBoolean(false);
+            AtomicReference<String> textBlockId = new AtomicReference<>();
+            AtomicReference<String> thinkingBlockId = new AtomicReference<>();
             Map<String, String> startedToolCalls = new ConcurrentHashMap<>();
 
             Flux<AgentEvent> modelEvents =
@@ -2116,8 +2119,8 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                                     block,
                                                     replyId,
                                                     context,
-                                                    textStarted,
-                                                    thinkingStarted,
+                                                    textBlockId,
+                                                    thinkingBlockId,
                                                     withToolEvents
                                                             ? startedToolCalls
                                                             : new ConcurrentHashMap<>(),
@@ -2130,11 +2133,13 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                     Flux.defer(
                             () -> {
                                 List<AgentEvent> events = new ArrayList<>();
-                                if (textStarted.get()) {
-                                    events.add(new TextBlockEndEvent(replyId, "text"));
+                                if (textBlockId.get() != null) {
+                                    events.add(new TextBlockEndEvent(replyId, textBlockId.get()));
                                 }
-                                if (thinkingStarted.get()) {
-                                    events.add(new ThinkingBlockEndEvent(replyId, "thinking"));
+                                if (thinkingBlockId.get() != null) {
+                                    events.add(
+                                            new ThinkingBlockEndEvent(
+                                                    replyId, thinkingBlockId.get()));
                                 }
                                 for (Map.Entry<String, String> tc : startedToolCalls.entrySet()) {
                                     events.add(
@@ -2152,24 +2157,32 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                 ContentBlock block,
                 String replyId,
                 ReasoningContext context,
-                AtomicBoolean textStarted,
-                AtomicBoolean thinkingStarted,
+                AtomicReference<String> textBlockId,
+                AtomicReference<String> thinkingBlockId,
                 Map<String, String> startedToolCalls,
                 List<AgentEvent> events) {
 
             if (block instanceof TextBlock tb) {
-                if (textStarted.compareAndSet(false, true)) {
-                    events.add(new TextBlockStartEvent(replyId, "text"));
+                if (textBlockId.get() == null) {
+                    String newId = UUID.randomUUID().toString().replace("-", "");
+                    if (textBlockId.compareAndSet(null, newId)) {
+                        events.add(new TextBlockStartEvent(replyId, newId));
+                    }
                 }
                 if (tb.getText() != null && !tb.getText().isEmpty()) {
-                    events.add(new TextBlockDeltaEvent(replyId, "text", tb.getText()));
+                    events.add(new TextBlockDeltaEvent(replyId, textBlockId.get(), tb.getText()));
                 }
             } else if (block instanceof ThinkingBlock tb) {
-                if (thinkingStarted.compareAndSet(false, true)) {
-                    events.add(new ThinkingBlockStartEvent(replyId, "thinking"));
+                if (thinkingBlockId.get() == null) {
+                    String newId = UUID.randomUUID().toString().replace("-", "");
+                    if (thinkingBlockId.compareAndSet(null, newId)) {
+                        events.add(new ThinkingBlockStartEvent(replyId, newId));
+                    }
                 }
                 if (tb.getThinking() != null && !tb.getThinking().isEmpty()) {
-                    events.add(new ThinkingBlockDeltaEvent(replyId, "thinking", tb.getThinking()));
+                    events.add(
+                            new ThinkingBlockDeltaEvent(
+                                    replyId, thinkingBlockId.get(), tb.getThinking()));
                 }
             } else if (block instanceof ToolUseBlock tub) {
                 String toolId = resolveToolCallId(tub, context);
@@ -3002,8 +3015,8 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                 ReasoningContext context, ModelCallInput mci, GenerateOptions hookOptions) {
 
             String replyId = UUID.randomUUID().toString().replace("-", "");
-            AtomicBoolean textStarted = new AtomicBoolean(false);
-            AtomicBoolean thinkingStarted = new AtomicBoolean(false);
+            AtomicReference<String> textBlockId = new AtomicReference<>();
+            AtomicReference<String> thinkingBlockId = new AtomicReference<>();
 
             Flux<AgentEvent> modelEvents =
                     mci.model().stream(mci.messages(), mci.tools(), mci.options())
@@ -3024,29 +3037,44 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                                         List<AgentEvent> events = new ArrayList<>();
                                         for (ContentBlock block : chunk.getContent()) {
                                             if (block instanceof TextBlock tb) {
-                                                if (textStarted.compareAndSet(false, true)) {
-                                                    events.add(
-                                                            new TextBlockStartEvent(
-                                                                    replyId, "text"));
+                                                if (textBlockId.get() == null) {
+                                                    String newId =
+                                                            UUID.randomUUID()
+                                                                    .toString()
+                                                                    .replace("-", "");
+                                                    if (textBlockId.compareAndSet(null, newId)) {
+                                                        events.add(
+                                                                new TextBlockStartEvent(
+                                                                        replyId, newId));
+                                                    }
                                                 }
                                                 if (tb.getText() != null
                                                         && !tb.getText().isEmpty()) {
                                                     events.add(
                                                             new TextBlockDeltaEvent(
-                                                                    replyId, "text", tb.getText()));
+                                                                    replyId,
+                                                                    textBlockId.get(),
+                                                                    tb.getText()));
                                                 }
                                             } else if (block instanceof ThinkingBlock tb) {
-                                                if (thinkingStarted.compareAndSet(false, true)) {
-                                                    events.add(
-                                                            new ThinkingBlockStartEvent(
-                                                                    replyId, "thinking"));
+                                                if (thinkingBlockId.get() == null) {
+                                                    String newId =
+                                                            UUID.randomUUID()
+                                                                    .toString()
+                                                                    .replace("-", "");
+                                                    if (thinkingBlockId.compareAndSet(
+                                                            null, newId)) {
+                                                        events.add(
+                                                                new ThinkingBlockStartEvent(
+                                                                        replyId, newId));
+                                                    }
                                                 }
                                                 if (tb.getThinking() != null
                                                         && !tb.getThinking().isEmpty()) {
                                                     events.add(
                                                             new ThinkingBlockDeltaEvent(
                                                                     replyId,
-                                                                    "thinking",
+                                                                    thinkingBlockId.get(),
                                                                     tb.getThinking()));
                                                 }
                                             }
@@ -3058,11 +3086,13 @@ public class ReActAgent extends AgentBase implements AutoCloseable {
                     Flux.defer(
                             () -> {
                                 List<AgentEvent> events = new ArrayList<>();
-                                if (textStarted.get()) {
-                                    events.add(new TextBlockEndEvent(replyId, "text"));
+                                if (textBlockId.get() != null) {
+                                    events.add(new TextBlockEndEvent(replyId, textBlockId.get()));
                                 }
-                                if (thinkingStarted.get()) {
-                                    events.add(new ThinkingBlockEndEvent(replyId, "thinking"));
+                                if (thinkingBlockId.get() != null) {
+                                    events.add(
+                                            new ThinkingBlockEndEvent(
+                                                    replyId, thinkingBlockId.get()));
                                 }
                                 events.add(new ModelCallEndEvent(replyId, context.getChatUsage()));
                                 return Flux.fromIterable(events);

@@ -688,8 +688,8 @@ public abstract class AgentBase implements Agent {
      *     reading a shared instance field
      * @return the seed system message, or {@code null} if none
      */
-    protected Msg seedSystemMsg(Object callScope) {
-        return null;
+    protected Mono<Msg> seedSystemMsg(Object callScope) {
+        return Mono.empty();
     }
 
     /**
@@ -751,9 +751,21 @@ public abstract class AgentBase implements Agent {
         }
 
         PreCallEvent event = new PreCallEvent(this, fullInput);
-        event.setSystemMessage(seedSystemMsg(callScope));
 
-        Mono<PreCallEvent> result = Mono.just(event);
+        Mono<PreCallEvent> result =
+                seedSystemMsg(callScope)
+                        .switchIfEmpty(
+                                Mono.defer(
+                                        () -> {
+                                            event.setSystemMessage(null);
+                                            return Mono.<Msg>empty();
+                                        }))
+                        .map(
+                                sysMsg -> {
+                                    event.setSystemMessage(sysMsg);
+                                    return event;
+                                })
+                        .switchIfEmpty(Mono.just(event));
         for (Hook hook : getSortedHooks()) {
             result = result.flatMap(hook::onEvent);
         }
