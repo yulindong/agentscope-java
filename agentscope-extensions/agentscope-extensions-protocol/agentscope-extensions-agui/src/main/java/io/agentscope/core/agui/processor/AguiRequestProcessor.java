@@ -21,6 +21,7 @@ import io.agentscope.core.agui.adapter.AguiAgentAdapter;
 import io.agentscope.core.agui.event.AguiEvent;
 import io.agentscope.core.agui.model.AguiMessage;
 import io.agentscope.core.agui.model.RunAgentInput;
+import io.agentscope.core.util.JsonUtils;
 import java.util.List;
 import java.util.Objects;
 import org.slf4j.Logger;
@@ -86,6 +87,16 @@ public class AguiRequestProcessor {
      */
     public ProcessResult process(RunAgentInput input, String headerAgentId, String pathAgentId) {
         String threadId = input.getThreadId();
+
+        // Log incoming run request
+        if (logger.isDebugEnabled()) {
+            try {
+                logger.debug(
+                        "AG-UI run request received: {}", JsonUtils.getJsonCodec().toJson(input));
+            } catch (Exception e) {
+                logger.debug("AG-UI run request received (serialization failed): {}", input);
+            }
+        }
 
         // Resolve agent ID
         String agentId = resolveAgentId(input, headerAgentId, pathAgentId);

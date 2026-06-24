@@ -16,6 +16,7 @@
 package io.agentscope.core.agui.model;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Collections;
 import java.util.HashMap;
@@ -28,6 +29,7 @@ import java.util.Objects;
  * <p>Tools are functions that the agent can call to perform actions or retrieve information.
  * This class defines the tool's interface including its name, description, and parameter schema.
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class AguiTool {
 
     private final String name;

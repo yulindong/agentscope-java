@@ -16,6 +16,7 @@
 package io.agentscope.core.agui.model;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Collections;
 import java.util.HashMap;
@@ -29,6 +30,7 @@ import java.util.Objects;
  * <p>This class represents the complete input needed to invoke an agent,
  * including messages, tools, context, state, and forwarded properties.
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class RunAgentInput {
 
     private final String threadId;

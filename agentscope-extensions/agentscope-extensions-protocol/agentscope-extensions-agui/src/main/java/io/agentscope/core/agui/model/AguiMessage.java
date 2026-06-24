@@ -16,6 +16,7 @@
 package io.agentscope.core.agui.model;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Collections;
 import java.util.List;
@@ -35,6 +36,7 @@ import java.util.Objects;
  *   <li>tool - Tool execution results</li>
  * </ul>
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class AguiMessage {
 
     private final String id;

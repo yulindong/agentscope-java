@@ -16,6 +16,7 @@
 package io.agentscope.core.agui.model;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Objects;
 
@@ -24,6 +25,7 @@ import java.util.Objects;
  *
  * <p>This class contains the function name and its arguments as a JSON string.
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class AguiFunctionCall {
 
     private final String name;

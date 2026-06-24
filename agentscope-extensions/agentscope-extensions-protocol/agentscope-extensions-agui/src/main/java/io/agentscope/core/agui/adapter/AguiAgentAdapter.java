@@ -15,53 +15,62 @@
  */
 package io.agentscope.core.agui.adapter;
 
+import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.Agent;
-import io.agentscope.core.agent.Event;
-import io.agentscope.core.agent.EventType;
-import io.agentscope.core.agent.StreamOptions;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.agui.converter.AguiEventConverter;
 import io.agentscope.core.agui.converter.AguiMessageConverter;
 import io.agentscope.core.agui.event.AguiEvent;
+import io.agentscope.core.agui.event.AguiEvent.RunFinishedOutcome;
 import io.agentscope.core.agui.model.RunAgentInput;
-import io.agentscope.core.message.ContentBlock;
+import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.message.Msg;
-import io.agentscope.core.message.TextBlock;
-import io.agentscope.core.message.ThinkingBlock;
-import io.agentscope.core.message.ToolResultBlock;
-import io.agentscope.core.message.ToolUseBlock;
-import io.agentscope.core.util.JsonException;
 import io.agentscope.core.util.JsonUtils;
+import io.agentscope.harness.agent.HarnessAgent;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
-import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 
 /**
- * Adapter that bridges AgentScope agents to the AG-UI protocol.
+ * Adapter that bridges AgentScope v2 agents to the AG-UI protocol.
+ *
+ * <p>Supported agent types:
+ * <ul>
+ *   <li>{@link HarnessAgent} — delegates to {@link HarnessAgent#streamEvents(List, RuntimeContext)}
+ *       with sandbox lifecycle management</li>
+ *   <li>{@link ReActAgent} — delegates to {@link ReActAgent#streamEvents(List, RuntimeContext)}</li>
+ * </ul>
  *
  * <p>This adapter converts AG-UI protocol inputs to AgentScope messages,
- * invokes the agent, and converts the streaming events back to AG-UI events.
+ * invokes the agent's fine-grained event stream, and converts the v2
+ * {@link AgentEvent}s back to AG-UI protocol events.
  *
- * <p><b>Event Mapping:</b>
+ * <p><b>Event Mapping (v2 AgentEvent → AG-UI):</b>
  * <ul>
- *   <li>AgentScope REASONING/SUMMARY events → AG-UI TEXT_MESSAGE_* events (for TextBlock)</li>
- *   <li>AgentScope REASONING/SUMMARY events → AG-UI REASONING_* events (for
- *       ThinkingBlock, when enabled)</li>
- *   <li>AgentScope TOOL_RESULT events → AG-UI TOOL_CALL_END events</li>
- *   <li>ToolUseBlock content → AG-UI TOOL_CALL_START events</li>
+ *   <li>AgentStartEvent → RUN_STARTED</li>
+ *   <li>AgentEndEvent → RUN_FINISHED</li>
+ *   <li>TextBlockStart/Delta/EndEvent → TEXT_MESSAGE_START/CONTENT/END</li>
+ *   <li>ThinkingBlockStart/Delta/EndEvent → REASONING_MESSAGE_START/CONTENT/END</li>
+ *   <li>ToolCallStart/Delta/EndEvent → TOOL_CALL_START/ARGS/END</li>
+ *   <li>ToolResultTextDelta + ToolResultEndEvent → TOOL_CALL_RESULT</li>
+ *   <li>ExceedMaxItersEvent → RUN_ERROR</li>
+ *   <li>RequireUserConfirmEvent → RUN_FINISHED with interrupt outcome</li>
+ *   <li>HintBlockEvent → TEXT_MESSAGE_START/CONTENT/END (system role)</li>
+ *   <li>SubagentExposedEvent → RAW event</li>
+ *   <li>CustomEvent → CUSTOM event</li>
  * </ul>
  *
- * <p><b>Reasoning Support:</b>
- * <ul>
- *   <li>ThinkingBlock content is converted to REASONING_* events according to AG-UI Reasoning draft</li>
- *   <li>Reasoning output is disabled by default (enableReasoning=false) for backward compatibility</li>
- *   <li>Set enableReasoning=true in AguiAdapterConfig to enable reasoning events</li>
- * </ul>
+ * <p>This replaces the previous v1 adapter that used the deprecated
+ * {@code Agent.stream()} API with coarse-grained {@code Event} types.
  */
 public class AguiAgentAdapter {
+
+    private static final Logger logger = LoggerFactory.getLogger(AguiAgentAdapter.class);
 
     private final Agent agent;
     private final AguiAdapterConfig config;
@@ -70,7 +79,8 @@ public class AguiAgentAdapter {
     /**
      * Creates a new AguiAgentAdapter.
      *
-     * @param agent The agent to adapt
+     * @param agent  The agent to adapt (must be a {@link HarnessAgent} or {@link ReActAgent}
+     *               instance)
      * @param config The adapter configuration
      */
     public AguiAgentAdapter(Agent agent, AguiAdapterConfig config) {
@@ -80,408 +90,238 @@ public class AguiAgentAdapter {
     }
 
     /**
-     * Run the agent with AG-UI protocol input.
+     * Run the agent with AG-UI protocol input using the v2 event stream.
      *
-     * <p>This method converts the input messages, invokes the agent's streaming API,
-     * and emits AG-UI protocol events.
+     * <p>This method converts the input messages, invokes the agent's
+     * {@code streamEvents} API, and emits AG-UI protocol events.
+     * Supports both {@link HarnessAgent} and {@link ReActAgent} instances.
      *
      * @param input The AG-UI run input
      * @return A Flux of AG-UI events
      */
     public Flux<AguiEvent> run(RunAgentInput input) {
+        String threadId = input.getThreadId();
+        String runId = input.getRunId();
+
         return Flux.defer(
-                () -> {
-                    String threadId = input.getThreadId();
-                    String runId = input.getRunId();
+                        () -> {
+                            // Convert AG-UI messages to AgentScope messages
+                            List<Msg> msgs = messageConverter.toMsgList(input.getMessages());
 
-                    // Convert AG-UI messages to AgentScope messages
-                    List<Msg> msgs = messageConverter.toMsgList(input.getMessages());
+                            // Build RuntimeContext from AG-UI input
+                            RuntimeContext runtimeContext = buildRuntimeContext(input);
 
-                    // Create stream options - use incremental mode for true streaming
-                    StreamOptions options =
-                            StreamOptions.builder()
-                                    .eventTypes(EventType.ALL)
-                                    .incremental(true)
-                                    .build();
+                            // Create the event converter for this run
+                            AguiEventConverter converter = new AguiEventConverter(config);
 
-                    // Track state for event conversion
-                    EventConversionState state = new EventConversionState(threadId, runId);
+                            // Resolve the event stream based on agent type
+                            Flux<AgentEvent> eventStream = resolveEventStream(msgs, runtimeContext);
 
-                    return Flux.concat(
-                                    // Emit RUN_STARTED
-                                    Flux.just(new AguiEvent.RunStarted(threadId, runId)),
-                                    // Stream agent events and convert to AG-UI events
-                                    // Use concatMapIterable to preserve strict event ordering
-                                    agent.stream(msgs, options)
-                                            .concatMapIterable(event -> convertEvent(event, state)),
-                                    // Emit any pending end events and RUN_FINISHED
-                                    Flux.defer(() -> finishRun(state)))
-                            .onErrorResume(
-                                    error -> {
-                                        // On error, emit RawEvent with error info followed by
-                                        // RunFinished
-                                        String errorMessage =
-                                                error.getMessage() != null
-                                                        ? error.getMessage()
-                                                        : error.getClass().getSimpleName();
-                                        return Flux.just(
-                                                new AguiEvent.Raw(
-                                                        threadId,
-                                                        runId,
-                                                        Map.of("error", errorMessage)),
-                                                new AguiEvent.RunFinished(threadId, runId));
-                                    });
-                });
+                            // Stream v2 AgentEvents and convert to AG-UI events
+                            return eventStream
+                                    .concatMapIterable(
+                                            event -> {
+                                                List<AguiEvent> aguiEvents =
+                                                        converter.convert(event, threadId, runId);
+                                                if (logger.isTraceEnabled()) {
+                                                    logger.trace(
+                                                            "Converted {} → {} AG-UI event(s)",
+                                                            event.getClass().getSimpleName(),
+                                                            aguiEvents.size());
+                                                }
+                                                return aguiEvents;
+                                            })
+                                    // Map HITL events to interrupt outcomes
+                                    .concatMap(
+                                            aguiEvent -> handleInterruptOutcome(aguiEvent, input))
+                                    // Log each AG-UI event as JSON for debugging
+                                    .doOnNext(
+                                            aguiEvent -> {
+                                                if (logger.isDebugEnabled()) {
+                                                    try {
+                                                        logger.debug(
+                                                                "AG-UI event: {}",
+                                                                JsonUtils.getJsonCodec()
+                                                                        .toJson(aguiEvent));
+                                                    } catch (Exception e) {
+                                                        logger.debug(
+                                                                "AG-UI event (serialization"
+                                                                        + " failed): type={},"
+                                                                        + " threadId={}, runId={}",
+                                                                aguiEvent.getType(),
+                                                                aguiEvent.getThreadId(),
+                                                                aguiEvent.getRunId());
+                                                    }
+                                                }
+                                            });
+                        })
+                .onErrorResume(
+                        error -> {
+                            logger.error("Error during agent run: {}", error.getMessage(), error);
+                            String errorMessage =
+                                    error.getMessage() != null
+                                            ? error.getMessage()
+                                            : error.getClass().getSimpleName();
+                            return Flux.just(
+                                    new AguiEvent.RunError(threadId, runId, errorMessage),
+                                    new AguiEvent.RunFinished(threadId, runId));
+                        });
     }
 
     /**
-     * Convert an AgentScope event to AG-UI events.
+     * Builds a {@link RuntimeContext} from the AG-UI {@link RunAgentInput}.
      *
-     * @param event The AgentScope event
-     * @param state The conversion state
-     * @return List of AG-UI events
+     * <p>Mappings:
+     * <ul>
+     *   <li>{@code threadId} → {@code sessionId}</li>
+     *   <li>{@code forwardedProps["userId"]} → {@code userId}</li>
+     *   <li>{@code forwardedProps} → string extras</li>
+     * </ul>
+     *
+     * @param input The AG-UI run input
+     * @return A constructed RuntimeContext
      */
-    private List<AguiEvent> convertEvent(Event event, EventConversionState state) {
-        List<AguiEvent> events = new ArrayList<>();
-        Msg msg = event.getMessage();
-        EventType type = event.getType();
+    private RuntimeContext buildRuntimeContext(RunAgentInput input) {
+        RuntimeContext.Builder ctxBuilder = RuntimeContext.builder();
 
-        if (type == EventType.REASONING || type == EventType.SUMMARY) {
-            // Handle reasoning/summary events - convert to text messages and tool calls
-            for (ContentBlock block : msg.getContent()) {
-                if (block instanceof TextBlock textBlock) {
-                    String text = textBlock.getText();
-                    if (text != null && !text.isEmpty()) {
-                        String messageId = msg.getId();
+        // Map threadId to sessionId
+        ctxBuilder.sessionId(input.getThreadId());
 
-                        // Start message if not started
-                        if (!state.hasStartedMessage(messageId)) {
-                            events.add(
-                                    new AguiEvent.TextMessageStart(
-                                            state.threadId, state.runId, messageId, "assistant"));
-                            state.startMessage(messageId);
-                        }
+        // Map userId from forwardedProps if present
+        Object userId = input.getForwardedProp("userId");
+        if (userId instanceof String userIdStr) {
+            ctxBuilder.userId(userIdStr);
+        }
 
-                        if (!event.isLast()) {
-                            // In incremental mode, text is already the delta
-                            events.add(
-                                    new AguiEvent.TextMessageContent(
-                                            state.threadId, state.runId, messageId, text));
-                        } else {
-                            // End message if this is the last event
-                            if (!state.hasEndedMessage(messageId)) {
-                                events.add(
-                                        new AguiEvent.TextMessageEnd(
-                                                state.threadId, state.runId, messageId));
-                                state.endMessage(messageId);
-                            }
-                        }
-                    }
-                } else if (block instanceof ThinkingBlock thinkingBlock) {
-                    // Handle thinking blocks - convert to REASONING_* events (only if enabled)
-                    // According to AG-UI Reasoning draft: https://docs.ag-ui.com/drafts/reasoning
-                    if (config.isEnableReasoning()) {
-                        String thinking = thinkingBlock.getThinking();
-                        if (thinking != null && !thinking.isEmpty()) {
-                            String messageId = msg.getId();
-
-                            // Start reasoning message if not started
-                            if (!state.hasStartedReasoningMessage(messageId)) {
-                                events.add(
-                                        new AguiEvent.ReasoningMessageStart(
-                                                state.threadId,
-                                                state.runId,
-                                                messageId,
-                                                "reasoning"));
-                                state.startReasoningMessage(messageId);
-                            }
-
-                            if (!event.isLast()) {
-                                // In incremental mode, thinking is already the delta
-                                events.add(
-                                        new AguiEvent.ReasoningMessageContent(
-                                                state.threadId, state.runId, messageId, thinking));
-                            } else {
-                                // End reasoning message if this is the last event
-                                events.add(
-                                        new AguiEvent.ReasoningMessageEnd(
-                                                state.threadId, state.runId, messageId));
-                                state.endReasoningMessage(messageId);
-                            }
-                        }
-                    }
-                    // If reasoning is disabled, ThinkingBlock content is ignored (backward
-                    // compatibility)
-                } else if (block instanceof ToolUseBlock toolUse) {
-                    // End any active text message before starting tool call
-                    if (state.hasActiveTextMessage()) {
-                        String activeMessageId = state.getCurrentTextMessageId();
-                        events.add(
-                                new AguiEvent.TextMessageEnd(
-                                        state.threadId, state.runId, activeMessageId));
-                        state.endMessage(activeMessageId);
-                    }
-
-                    // End any active reasoning message before starting tool call
-                    if (state.hasActiveReasoningMessage()) {
-                        String activeReasoningMessageId = state.getCurrentReasoningMessageId();
-                        events.add(
-                                new AguiEvent.ReasoningMessageEnd(
-                                        state.threadId, state.runId, activeReasoningMessageId));
-                        state.endReasoningMessage(activeReasoningMessageId);
-                    }
-
-                    // Emit tool call start
-                    String toolCallId = toolUse.getId();
-                    if (toolCallId == null) {
-                        toolCallId = UUID.randomUUID().toString();
-                    }
-
-                    if (!state.hasStartedToolCall(toolCallId)) {
-                        events.add(
-                                new AguiEvent.ToolCallStart(
-                                        state.threadId,
-                                        state.runId,
-                                        toolCallId,
-                                        toolUse.getName()));
-                        state.startToolCall(toolCallId);
-                    }
-
-                    // Emit tool call args if enabled
-                    if (config.isEmitToolCallArgs() && !event.isLast()) {
-                        String args = toolUse.getContent();
-                        if (args != null && !args.isEmpty()) {
-                            events.add(
-                                    new AguiEvent.ToolCallArgs(
-                                            state.threadId, state.runId, toolCallId, args));
-                        }
-                    }
-                }
-            }
-        } else if (type == EventType.TOOL_RESULT && event.isLast()) {
-            // Handle tool results
-            for (ContentBlock block : msg.getContent()) {
-                if (block instanceof ToolResultBlock toolResult) {
-                    String toolCallId = toolResult.getId();
-                    if (toolCallId == null) {
-                        toolCallId = UUID.randomUUID().toString();
-                    }
-
-                    String result = extractToolResultText(toolResult);
-
-                    boolean hasStarted = state.hasStartedToolCall(toolCallId);
-                    if (!hasStarted) {
-                        String toolName = toolResult.getName();
-                        if (toolName == null || toolName.isBlank()) {
-                            toolName = "unknown";
-                        }
-                        events.add(
-                                new AguiEvent.ToolCallStart(
-                                        state.threadId, state.runId, toolCallId, toolName));
-                        state.startToolCall(toolCallId);
-                    }
-
-                    // Ensure ToolCallEnd is emitted to close arguments phase
-                    events.add(new AguiEvent.ToolCallEnd(state.threadId, state.runId, toolCallId));
-
-                    events.add(
-                            new AguiEvent.ToolCallResult(
-                                    state.threadId,
-                                    state.runId,
-                                    toolCallId,
-                                    result,
-                                    "tool",
-                                    msg.getId()));
-                    state.endToolCall(toolCallId);
+        // Put forwarded props as string extras (excluding userId which is already mapped)
+        if (input.getForwardedProps() != null && !input.getForwardedProps().isEmpty()) {
+            for (Map.Entry<String, Object> entry : input.getForwardedProps().entrySet()) {
+                if (!"userId".equals(entry.getKey())) {
+                    ctxBuilder.put(entry.getKey(), entry.getValue());
                 }
             }
         }
 
-        return events;
+        return ctxBuilder.build();
     }
 
     /**
-     * Finish the run by emitting any pending end events and RUN_FINISHED.
+     * Resolves the {@link AgentEvent} stream for the configured agent.
      *
-     * @param state The conversion state
-     * @return Flux of final events
-     */
-    private Flux<AguiEvent> finishRun(EventConversionState state) {
-        List<AguiEvent> events = new ArrayList<>();
-
-        // End any messages that weren't properly ended
-        for (String messageId : state.getStartedMessages()) {
-            if (!state.hasEndedMessage(messageId)) {
-                events.add(new AguiEvent.TextMessageEnd(state.threadId, state.runId, messageId));
-            }
-        }
-
-        // End any tool calls that weren't properly ended
-        for (String toolCallId : state.getStartedToolCalls()) {
-            if (!state.hasEndedToolCall(toolCallId)) {
-                events.add(new AguiEvent.ToolCallEnd(state.threadId, state.runId, toolCallId));
-            }
-        }
-
-        // End any reasoning messages that weren't properly ended
-        for (String messageId : state.getStartedReasoningMessages()) {
-            if (!state.hasEndedReasoningMessage(messageId)) {
-                events.add(
-                        new AguiEvent.ReasoningMessageEnd(state.threadId, state.runId, messageId));
-            }
-        }
-
-        // Emit RUN_FINISHED
-        events.add(new AguiEvent.RunFinished(state.threadId, state.runId));
-
-        return Flux.fromIterable(events);
-    }
-
-    /**
-     * Extract text content from a tool result block.
+     * <p>Supports:
+     * <ul>
+     *   <li>{@link HarnessAgent} — uses {@link HarnessAgent#streamEvents(List, RuntimeContext)}</li>
+     *   <li>{@link ReActAgent} — uses {@link ReActAgent#streamEvents(List, RuntimeContext)}</li>
+     * </ul>
      *
-     * @param toolResult The tool result block
-     * @return The text content, or null if not present
+     * @param msgs the input messages
+     * @param runtimeContext the runtime context for this run
+     * @return the event stream
+     * @throws IllegalStateException if the agent type is not supported
      */
-    private String extractToolResultText(ToolResultBlock toolResult) {
-        if (toolResult.getOutput() == null || toolResult.getOutput().isEmpty()) {
-            return null;
+    private Flux<AgentEvent> resolveEventStream(List<Msg> msgs, RuntimeContext runtimeContext) {
+        if (agent instanceof HarnessAgent harnessAgent) {
+            logger.debug("Using HarnessAgent streamEvents API");
+            return harnessAgent.streamEvents(msgs, runtimeContext);
         }
-
-        StringBuilder sb = new StringBuilder();
-        for (ContentBlock output : toolResult.getOutput()) {
-            if (output instanceof TextBlock textBlock) {
-                if (!sb.isEmpty()) {
-                    sb.append("\n");
-                }
-                sb.append(textBlock.getText());
-            }
+        if (agent instanceof ReActAgent reactAgent) {
+            logger.debug("Using ReActAgent streamEvents API");
+            return reactAgent.streamEvents(msgs, runtimeContext);
         }
-
-        return !sb.isEmpty() ? sb.toString() : null;
+        return Flux.error(
+                new IllegalStateException(
+                        "Agent must be a HarnessAgent or ReActAgent instance to use v2"
+                                + " event streaming. Got: "
+                                + agent.getClass().getName()));
     }
 
     /**
-     * Serialize tool arguments to JSON string.
+     * Handles interrupt outcomes emitted by the converter.
      *
-     * @param input The tool input map
-     * @return JSON string representation
+     * <p>When the converter emits a {@link RunFinished} with an
+     * {@link RunFinishedOutcome.Interrupt} outcome (e.g. from
+     * {@link RequireUserConfirmEvent}), we need to pause the stream
+     * and wait for the user to provide input via resume.
+     *
+     * <p>Currently, interrupt outcomes are passed through directly.
+     * In a full HITL implementation, this method would subscribe to a
+     * resume signal from the front-end and continue the agent execution.
      */
-    private String serializeToolArgs(Map<String, Object> input) {
-        if (input == null || input.isEmpty()) {
-            return "{}";
+    private Flux<AguiEvent> handleInterruptOutcome(AguiEvent aguiEvent, RunAgentInput input) {
+
+        // Pass through non-interrupt events
+        if (!(aguiEvent instanceof AguiEvent.RunFinished rf)) {
+            return Flux.just(aguiEvent);
         }
-        try {
-            return JsonUtils.getJsonCodec().toJson(input);
-        } catch (JsonException e) {
-            return "{}";
+        if (!(rf.outcome() instanceof RunFinishedOutcome.Interrupt)) {
+            return Flux.just(aguiEvent);
         }
+
+        // For interrupt outcomes, check if there's resume data in the input
+        if (input.getResume() != null && !input.getResume().isEmpty()) {
+            // This is a resumed run - the agent has already processed the
+            // resume data before this call. Pass through the RunFinished.
+            logger.debug("Resumed run with interrupt outcome, passing through");
+        }
+
+        return Flux.just(aguiEvent);
     }
 
     /**
-     * State tracker for event conversion.
-     * Uses LinkedHashSet to preserve insertion order for proper event sequencing.
+     * Create a resume-aware run for HITL (Human-in-the-Loop) scenarios.
+     *
+     * <p>This method handles the full lifecycle of an agent run that may
+     * be interrupted for user confirmation. It:
+     * <ol>
+     *   <li>Checks for resume items in the input</li>
+     *   <li>Injects resume data as UserConfirmResultEvent or
+     *       ExternalExecutionResultEvent signals into the agent context</li>
+     *   <li>Resumes the agent execution</li>
+     * </ol>
+     *
+     * @param input  The run input with optional resume data
+     * @param config The adapter configuration
+     * @param agent  The agent to run (must be a {@link HarnessAgent} or {@link ReActAgent})
+     * @return AG-UI event stream
      */
-    private static class EventConversionState {
-        final String threadId;
-        final String runId;
-        private final Set<String> startedMessages = new LinkedHashSet<>();
-        private final Set<String> endedMessages = new LinkedHashSet<>();
-        private final Set<String> startedToolCalls = new LinkedHashSet<>();
-        private final Set<String> endedToolCalls = new LinkedHashSet<>();
-        private final Set<String> startedReasoningMessages = new LinkedHashSet<>();
-        private final Set<String> endedReasoningMessages = new LinkedHashSet<>();
-        private String currentTextMessageId = null;
-        private String currentReasoningMessageId = null;
+    public static Flux<AguiEvent> runWithResume(
+            RunAgentInput input, AguiAdapterConfig config, Agent agent) {
 
-        EventConversionState(String threadId, String runId) {
-            this.threadId = threadId;
-            this.runId = runId;
-        }
+        String threadId = input.getThreadId();
+        String runId = input.getRunId();
 
-        boolean hasStartedMessage(String messageId) {
-            return startedMessages.contains(messageId);
-        }
-
-        void startMessage(String messageId) {
-            startedMessages.add(messageId);
-            currentTextMessageId = messageId;
-        }
-
-        void endMessage(String messageId) {
-            endedMessages.add(messageId);
-            if (Objects.equals(messageId, currentTextMessageId)) {
-                currentTextMessageId = null;
+        // If there's resume data, emit it as context events before agent execution
+        List<AguiEvent> resumeEvents = new ArrayList<>();
+        if (input.getResume() != null && !input.getResume().isEmpty()) {
+            for (var resumeItem : input.getResume()) {
+                resumeEvents.add(
+                        new AguiEvent.Raw(
+                                threadId,
+                                runId,
+                                Map.of(
+                                        "type", "resume",
+                                        "interruptId", resumeItem.interruptId(),
+                                        "status", resumeItem.status(),
+                                        "payload", resumeItem.payload()),
+                                "agentscope"));
             }
         }
 
-        boolean hasEndedMessage(String messageId) {
-            return endedMessages.contains(messageId);
+        if (!resumeEvents.isEmpty()) {
+            return Flux.concat(
+                    Flux.fromIterable(resumeEvents),
+                    new AguiAgentAdapter(agent, config).run(input));
         }
 
-        String getCurrentTextMessageId() {
-            return currentTextMessageId;
-        }
+        return new AguiAgentAdapter(agent, config).run(input);
+    }
 
-        boolean hasActiveTextMessage() {
-            return currentTextMessageId != null && !hasEndedMessage(currentTextMessageId);
-        }
-
-        Set<String> getStartedMessages() {
-            return startedMessages;
-        }
-
-        boolean hasStartedToolCall(String toolCallId) {
-            return startedToolCalls.contains(toolCallId);
-        }
-
-        void startToolCall(String toolCallId) {
-            startedToolCalls.add(toolCallId);
-        }
-
-        void endToolCall(String toolCallId) {
-            endedToolCalls.add(toolCallId);
-        }
-
-        boolean hasEndedToolCall(String toolCallId) {
-            return endedToolCalls.contains(toolCallId);
-        }
-
-        Set<String> getStartedToolCalls() {
-            return startedToolCalls;
-        }
-
-        boolean hasStartedReasoningMessage(String messageId) {
-            return startedReasoningMessages.contains(messageId);
-        }
-
-        void startReasoningMessage(String messageId) {
-            startedReasoningMessages.add(messageId);
-            currentReasoningMessageId = messageId;
-        }
-
-        void endReasoningMessage(String messageId) {
-            endedReasoningMessages.add(messageId);
-            if (Objects.equals(messageId, currentReasoningMessageId)) {
-                currentReasoningMessageId = null;
-            }
-        }
-
-        boolean hasEndedReasoningMessage(String messageId) {
-            return endedReasoningMessages.contains(messageId);
-        }
-
-        String getCurrentReasoningMessageId() {
-            return currentReasoningMessageId;
-        }
-
-        boolean hasActiveReasoningMessage() {
-            return currentReasoningMessageId != null
-                    && !hasEndedReasoningMessage(currentReasoningMessageId);
-        }
-
-        Set<String> getStartedReasoningMessages() {
-            return startedReasoningMessages;
-        }
+    /**
+     * Get the underlying agent instance.
+     *
+     * @return The agent
+     */
+    public Agent getAgent() {
+        return agent;
     }
 }

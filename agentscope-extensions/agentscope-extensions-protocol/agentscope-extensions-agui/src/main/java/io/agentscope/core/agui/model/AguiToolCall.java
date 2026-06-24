@@ -16,6 +16,7 @@
 package io.agentscope.core.agui.model;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Objects;
 
@@ -25,6 +26,7 @@ import java.util.Objects;
  * <p>Tool calls are used in assistant messages to indicate that the agent
  * wants to invoke a tool. They contain an ID, type, and function details.
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class AguiToolCall {
 
     private final String id;

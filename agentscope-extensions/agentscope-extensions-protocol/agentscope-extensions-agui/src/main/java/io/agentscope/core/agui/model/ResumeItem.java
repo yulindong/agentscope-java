@@ -16,6 +16,7 @@
 package io.agentscope.core.agui.model;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Objects;
 
@@ -30,6 +31,7 @@ import java.util.Objects;
  * @param status Either "resolved" (user responded) or "cancelled" (user abandoned)
  * @param payload Optional response payload, validated against the interrupt's responseSchema
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record ResumeItem(
         @JsonProperty("interruptId") String interruptId,
         @JsonProperty("status") String status,
