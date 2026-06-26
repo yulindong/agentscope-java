@@ -22,10 +22,12 @@ import io.agentscope.core.agui.converter.AguiEventConverter;
 import io.agentscope.core.agui.converter.AguiMessageConverter;
 import io.agentscope.core.agui.event.AguiEvent;
 import io.agentscope.core.agui.event.AguiEvent.RunFinishedOutcome;
+import io.agentscope.core.agui.model.AguiMessage;
 import io.agentscope.core.agui.model.RunAgentInput;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.message.Msg;
+import io.agentscope.core.state.AgentState;
 import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
 import java.util.ArrayList;
@@ -105,11 +107,18 @@ public class AguiAgentAdapter {
 
         return Flux.defer(
                         () -> {
-                            // Convert AG-UI messages to AgentScope messages
-                            List<Msg> msgs = messageConverter.toMsgList(input.getMessages());
-
                             // Build RuntimeContext from AG-UI input
                             RuntimeContext runtimeContext = buildRuntimeContext(input);
+
+                            // Check if this is a messages snapshot request:
+                            // threadId has value, messages is empty, and resume is empty
+                            if (isMessagesSnapshotRequest(input)) {
+                                return buildMessagesSnapshotFlux(
+                                        input, runtimeContext, threadId, runId);
+                            }
+
+                            // Convert AG-UI messages to AgentScope messages
+                            List<Msg> msgs = messageConverter.toMsgList(input.getMessages());
 
                             // Create the event converter for this run
                             AguiEventConverter converter = new AguiEventConverter(config);
@@ -314,6 +323,95 @@ public class AguiAgentAdapter {
         }
 
         return new AguiAgentAdapter(agent, config).run(input);
+    }
+
+    /**
+     * Check if the input is a messages snapshot request.
+     *
+     * <p>A messages snapshot is triggered when the input has a threadId with a value,
+     * but no messages and no resume items. This means the client is requesting the
+     * full message history for the given thread.
+     *
+     * @param input The AG-UI run input
+     * @return true if this is a messages snapshot request
+     */
+    private boolean isMessagesSnapshotRequest(RunAgentInput input) {
+        String threadId = input.getThreadId();
+        boolean hasThreadId = threadId != null && !threadId.isEmpty();
+        boolean noMessages = input.getMessages() == null || input.getMessages().isEmpty();
+        boolean noResume = input.getResume() == null || input.getResume().isEmpty();
+        return hasThreadId && noMessages && noResume;
+    }
+
+    /**
+     * Build a Flux of AG-UI events for a messages snapshot request.
+     *
+     * <p>This retrieves the message history from the agent's {@link AgentState}
+     * context, converts them to AG-UI messages, and emits:
+     * {@code RunStarted → MessagesSnapshot → RunFinished}.
+     *
+     * @param input The AG-UI run input
+     * @param runtimeContext The built runtime context
+     * @param threadId The thread ID
+     * @param runId The run ID
+     * @return A Flux of AG-UI events
+     */
+    private Flux<AguiEvent> buildMessagesSnapshotFlux(
+            RunAgentInput input, RuntimeContext runtimeContext, String threadId, String runId) {
+
+        logger.debug("Messages snapshot request: threadId={}, runId={}", threadId, runId);
+
+        List<AguiEvent> events = new ArrayList<>();
+        events.add(new AguiEvent.RunStarted(threadId, runId));
+
+        // Get message history from AgentState
+        AgentState agentState = getAgentState(runtimeContext);
+        if (agentState != null) {
+            List<Msg> contextMessages = agentState.getContext();
+            if (contextMessages != null && !contextMessages.isEmpty()) {
+                List<AguiMessage> aguiMessages =
+                        messageConverter.toAguiMessageList(contextMessages);
+                events.add(new AguiEvent.MessagesSnapshot(threadId, runId, aguiMessages));
+                logger.debug(
+                        "Messages snapshot: {} message(s) from AgentState context",
+                        aguiMessages.size());
+            } else {
+                events.add(new AguiEvent.MessagesSnapshot(threadId, runId, List.of()));
+                logger.debug("Messages snapshot: empty context");
+            }
+        } else {
+            events.add(new AguiEvent.MessagesSnapshot(threadId, runId, List.of()));
+            logger.debug("Messages snapshot: AgentState not available");
+        }
+
+        events.add(new AguiEvent.RunFinished(threadId, runId));
+        return Flux.fromIterable(events);
+    }
+
+    /**
+     * Get the {@link AgentState} from the agent using the given {@link RuntimeContext}.
+     *
+     * <p>Supports:
+     * <ul>
+     *   <li>{@link HarnessAgent} — delegates to
+     *       {@code getDelegate().getAgentState(RuntimeContext)}</li>
+     *   <li>{@link ReActAgent} — uses {@code getAgentState(RuntimeContext)}</li>
+     * </ul>
+     *
+     * @param runtimeContext The runtime context containing session/user info
+     * @return The AgentState, or null if not available
+     */
+    private AgentState getAgentState(RuntimeContext runtimeContext) {
+        if (agent instanceof HarnessAgent harnessAgent) {
+            return harnessAgent.getDelegate().getAgentState(runtimeContext);
+        }
+        if (agent instanceof ReActAgent reactAgent) {
+            return reactAgent.getAgentState(runtimeContext);
+        }
+        logger.warn(
+                "Cannot get AgentState: agent type {} does not support it",
+                agent.getClass().getName());
+        return null;
     }
 
     /**

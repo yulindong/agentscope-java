@@ -24,9 +24,11 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.EventType;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.agent.StreamOptions;
 import io.agentscope.core.agui.event.AguiEvent;
 import io.agentscope.core.agui.model.AguiMessage;
@@ -37,6 +39,7 @@ import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ThinkingBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.state.AgentState;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -439,9 +442,89 @@ class AguiAgentAdapterTest {
 
     @Test
     void testRunWithEmptyMessages() {
+        // When threadId is set but messages and resume are empty,
+        // the adapter triggers MessagesSnapshot flow instead of agent execution.
+        // Since mock Agent returns null for getAgentState(), the snapshot is empty.
+        RunAgentInput input = RunAgentInput.builder().threadId("thread-1").runId("run-1").build();
+
+        List<AguiEvent> events = adapter.run(input).collectList().block();
+
+        assertNotNull(events);
+        assertEquals(3, events.size());
+        assertInstanceOf(AguiEvent.RunStarted.class, events.get(0));
+        assertInstanceOf(AguiEvent.MessagesSnapshot.class, events.get(1));
+        assertInstanceOf(AguiEvent.RunFinished.class, events.get(2));
+
+        // Verify MessagesSnapshot has empty messages (AgentState not available from mock)
+        AguiEvent.MessagesSnapshot snapshot = (AguiEvent.MessagesSnapshot) events.get(1);
+        assertEquals("thread-1", snapshot.getThreadId());
+        assertEquals("run-1", snapshot.getRunId());
+        assertTrue(snapshot.messages().isEmpty());
+    }
+
+    @Test
+    void testMessagesSnapshotWithAgentStateContext() {
+        // Use a mock ReActAgent that returns AgentState with message history
+        ReActAgent mockReActAgent = mock(ReActAgent.class);
+
+        Msg userMsg =
+                Msg.builder()
+                        .id("msg-u1")
+                        .role(MsgRole.USER)
+                        .content(TextBlock.builder().text("Hello").build())
+                        .build();
+        Msg assistantMsg =
+                Msg.builder()
+                        .id("msg-a1")
+                        .role(MsgRole.ASSISTANT)
+                        .content(TextBlock.builder().text("Hi there!").build())
+                        .build();
+
+        AgentState agentState =
+                AgentState.builder()
+                        .sessionId("thread-1")
+                        .addMessage(userMsg)
+                        .addMessage(assistantMsg)
+                        .build();
+
+        when(mockReActAgent.getAgentState(any(RuntimeContext.class))).thenReturn(agentState);
+
+        AguiAgentAdapter reactAdapter =
+                new AguiAgentAdapter(mockReActAgent, AguiAdapterConfig.defaultConfig());
+
+        // Empty messages + threadId → MessagesSnapshot
+        RunAgentInput input = RunAgentInput.builder().threadId("thread-1").runId("run-1").build();
+
+        List<AguiEvent> events = reactAdapter.run(input).collectList().block();
+
+        assertNotNull(events);
+        assertEquals(3, events.size());
+        assertInstanceOf(AguiEvent.RunStarted.class, events.get(0));
+        assertInstanceOf(AguiEvent.MessagesSnapshot.class, events.get(1));
+        assertInstanceOf(AguiEvent.RunFinished.class, events.get(2));
+
+        // Verify MessagesSnapshot contains the message history
+        AguiEvent.MessagesSnapshot snapshot = (AguiEvent.MessagesSnapshot) events.get(1);
+        assertEquals(2, snapshot.messages().size());
+        assertEquals("msg-u1", snapshot.messages().get(0).getId());
+        assertEquals("user", snapshot.messages().get(0).getRole());
+        assertEquals("Hello", snapshot.messages().get(0).getContent());
+        assertEquals("msg-a1", snapshot.messages().get(1).getId());
+        assertEquals("assistant", snapshot.messages().get(1).getRole());
+        assertEquals("Hi there!", snapshot.messages().get(1).getContent());
+    }
+
+    @Test
+    void testMessagesSnapshotNotTriggeredWithMessages() {
+        // When messages are present, normal agent execution should happen
         when(mockAgent.stream(anyList(), any(StreamOptions.class))).thenReturn(Flux.empty());
 
-        RunAgentInput input = RunAgentInput.builder().threadId("thread-1").runId("run-1").build();
+        RunAgentInput input =
+                RunAgentInput.builder()
+                        .threadId("thread-1")
+                        .runId("run-1")
+                        .messages(List.of(AguiMessage.userMessage("msg-1", "Hello")))
+                        .build();
 
         List<AguiEvent> events = adapter.run(input).collectList().block();
 
@@ -449,6 +532,11 @@ class AguiAgentAdapterTest {
         assertEquals(2, events.size());
         assertInstanceOf(AguiEvent.RunStarted.class, events.get(0));
         assertInstanceOf(AguiEvent.RunFinished.class, events.get(1));
+
+        // Should NOT have MessagesSnapshot
+        boolean hasSnapshot =
+                events.stream().anyMatch(e -> e instanceof AguiEvent.MessagesSnapshot);
+        assertTrue(!hasSnapshot, "Should NOT have MessagesSnapshot when messages are present");
     }
 
     @Test
