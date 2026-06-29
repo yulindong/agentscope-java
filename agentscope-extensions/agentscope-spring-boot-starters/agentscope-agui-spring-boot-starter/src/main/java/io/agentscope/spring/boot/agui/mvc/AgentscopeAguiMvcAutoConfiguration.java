@@ -82,6 +82,7 @@ public class AgentscopeAguiMvcAutoConfiguration {
                         .emitToolCallArgs(props.isEmitToolCallArgs())
                         .enableReasoning(props.isEnableReasoning())
                         .defaultAgentId(props.getDefaultAgentId())
+                        .terminateOnClientDisconnect(props.isTerminateOnClientDisconnect())
                         .build();
 
         return AguiMvcController.builder()

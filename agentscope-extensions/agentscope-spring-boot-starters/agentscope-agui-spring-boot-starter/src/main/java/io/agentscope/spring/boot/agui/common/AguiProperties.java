@@ -38,6 +38,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *     agent-id-header: X-Agent-Id
  *     enable-path-routing: true
  *     enable-reasoning: false
+ *     terminate-on-client-disconnect: true
  * </pre>
  */
 @ConfigurationProperties(prefix = "agentscope.agui")
@@ -111,6 +112,15 @@ public class AguiProperties {
      * open.
      */
     private long sseTimeout = 600000L;
+
+    /**
+     * Whether to terminate the agent execution when the client disconnects.
+     *
+     * <p>When enabled (default), the agent's interrupt() method will be called on SSE
+     * connection cancel, timeout, or error. When disabled, the agent continues execution
+     * after client disconnect.
+     */
+    private boolean terminateOnClientDisconnect = true;
 
     public String getPathPrefix() {
         return pathPrefix;
@@ -230,5 +240,13 @@ public class AguiProperties {
 
     public void setSseTimeout(long sseTimeout) {
         this.sseTimeout = sseTimeout;
+    }
+
+    public boolean isTerminateOnClientDisconnect() {
+        return terminateOnClientDisconnect;
+    }
+
+    public void setTerminateOnClientDisconnect(boolean terminateOnClientDisconnect) {
+        this.terminateOnClientDisconnect = terminateOnClientDisconnect;
     }
 }

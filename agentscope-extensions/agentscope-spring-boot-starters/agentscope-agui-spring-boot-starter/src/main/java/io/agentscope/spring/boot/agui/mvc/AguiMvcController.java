@@ -69,8 +69,11 @@ public class AguiMvcController {
     private final String agentIdHeader;
     private final long sseTimeout;
     private final ExecutorService executorService;
+    private final boolean terminateOnClientDisconnect;
 
     private AguiMvcController(Builder builder) {
+        AguiAdapterConfig resolvedConfig =
+                builder.config != null ? builder.config : AguiAdapterConfig.defaultConfig();
         this.processor =
                 AguiRequestProcessor.builder()
                         .agentResolver(
@@ -79,16 +82,14 @@ public class AguiMvcController {
                                         .sessionManager(builder.sessionManager)
                                         .serverSideMemory(builder.serverSideMemory)
                                         .build())
-                        .config(
-                                builder.config != null
-                                        ? builder.config
-                                        : AguiAdapterConfig.defaultConfig())
+                        .config(resolvedConfig)
                         .build();
         this.encoder = new AguiEventEncoder();
         this.agentIdHeader =
                 builder.agentIdHeader != null ? builder.agentIdHeader : DEFAULT_AGENT_ID_HEADER;
         this.sseTimeout = builder.sseTimeout > 0 ? builder.sseTimeout : 600000L;
         this.executorService = Executors.newCachedThreadPool();
+        this.terminateOnClientDisconnect = resolvedConfig.isTerminateOnClientDisconnect();
     }
 
     /**
@@ -135,20 +136,35 @@ public class AguiMvcController {
                                 () -> logger.debug("SSE connection completed for run {}", runId));
                         emitter.onTimeout(
                                 () -> {
-                                    logger.info(
-                                            "SSE connection timed out for run {}, interrupting"
-                                                    + " agent",
-                                            runId);
-                                    result.agent().interrupt();
+                                    if (terminateOnClientDisconnect) {
+                                        logger.info(
+                                                "SSE connection timed out for run {},"
+                                                        + " interrupting agent",
+                                                runId);
+                                        result.agent().interrupt();
+                                    } else {
+                                        logger.info(
+                                                "SSE connection timed out for run {},"
+                                                        + " agent continues execution",
+                                                runId);
+                                    }
                                 });
                         emitter.onError(
                                 (ex) -> {
-                                    logger.info(
-                                            "SSE connection error for run {}: {}, interrupting"
-                                                    + " agent",
-                                            runId,
-                                            ex.getMessage());
-                                    result.agent().interrupt();
+                                    if (terminateOnClientDisconnect) {
+                                        logger.info(
+                                                "SSE connection error for run {}: {},"
+                                                        + " interrupting agent",
+                                                runId,
+                                                ex.getMessage());
+                                        result.agent().interrupt();
+                                    } else {
+                                        logger.info(
+                                                "SSE connection error for run {}: {},"
+                                                        + " agent continues execution",
+                                                runId,
+                                                ex.getMessage());
+                                    }
                                 });
 
                         // Subscribe to event stream from the same result

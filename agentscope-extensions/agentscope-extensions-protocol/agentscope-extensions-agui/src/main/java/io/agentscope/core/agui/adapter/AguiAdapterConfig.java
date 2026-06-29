@@ -32,6 +32,7 @@ public class AguiAdapterConfig {
     private final boolean enableReasoning;
     private final Duration runTimeout;
     private final String defaultAgentId;
+    private final boolean terminateOnClientDisconnect;
 
     private AguiAdapterConfig(Builder builder) {
         this.toolMergeMode = builder.toolMergeMode;
@@ -40,6 +41,7 @@ public class AguiAdapterConfig {
         this.enableReasoning = builder.enableReasoning;
         this.runTimeout = builder.runTimeout;
         this.defaultAgentId = builder.defaultAgentId;
+        this.terminateOnClientDisconnect = builder.terminateOnClientDisconnect;
     }
 
     /**
@@ -101,6 +103,20 @@ public class AguiAdapterConfig {
     }
 
     /**
+     * Check if the agent should be terminated when the client disconnects.
+     *
+     * <p>When enabled (default), the agent's {@code interrupt()} method will be called
+     * when the SSE connection is cancelled, timed out, or encounters an error.
+     * When disabled, the agent continues execution even after the client disconnects,
+     * which is useful for scenarios where the result is needed later via reconnection.
+     *
+     * @return true if the agent should be terminated on client disconnect
+     */
+    public boolean isTerminateOnClientDisconnect() {
+        return terminateOnClientDisconnect;
+    }
+
+    /**
      * Creates a new builder for AguiAdapterConfig.
      *
      * @return A new builder instance
@@ -129,6 +145,7 @@ public class AguiAdapterConfig {
         private boolean enableReasoning = false;
         private Duration runTimeout = Duration.ofMinutes(10);
         private String defaultAgentId;
+        private boolean terminateOnClientDisconnect = true;
 
         /**
          * Set the tool merge mode.
@@ -197,6 +214,21 @@ public class AguiAdapterConfig {
          */
         public Builder defaultAgentId(String defaultAgentId) {
             this.defaultAgentId = defaultAgentId;
+            return this;
+        }
+
+        /**
+         * Set whether to terminate the agent when the client disconnects.
+         *
+         * <p>When enabled (default), the agent will be interrupted when the SSE
+         * connection is lost. When disabled, the agent continues execution after
+         * client disconnect, allowing results to be retrieved later.
+         *
+         * @param terminateOnClientDisconnect true to terminate agent on disconnect
+         * @return This builder
+         */
+        public Builder terminateOnClientDisconnect(boolean terminateOnClientDisconnect) {
+            this.terminateOnClientDisconnect = terminateOnClientDisconnect;
             return this;
         }
 

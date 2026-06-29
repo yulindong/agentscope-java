@@ -41,6 +41,7 @@ class AguiAdapterConfigTest {
         assertFalse(config.isEnableReasoning()); // Default should be false
         assertEquals(Duration.ofMinutes(10), config.getRunTimeout());
         assertNull(config.getDefaultAgentId());
+        assertTrue(config.isTerminateOnClientDisconnect()); // Default should be true
     }
 
     @Test
@@ -135,6 +136,7 @@ class AguiAdapterConfigTest {
                         .enableReasoning(true)
                         .runTimeout(Duration.ofHours(1))
                         .defaultAgentId("my-agent")
+                        .terminateOnClientDisconnect(false)
                         .build();
 
         assertEquals(ToolMergeMode.AGENT_ONLY, config.getToolMergeMode());
@@ -143,6 +145,7 @@ class AguiAdapterConfigTest {
         assertTrue(config.isEnableReasoning());
         assertEquals(Duration.ofHours(1), config.getRunTimeout());
         assertEquals("my-agent", config.getDefaultAgentId());
+        assertFalse(config.isTerminateOnClientDisconnect());
     }
 
     @Test
@@ -218,5 +221,25 @@ class AguiAdapterConfigTest {
             AguiAdapterConfig config = AguiAdapterConfig.builder().toolMergeMode(mode).build();
             assertEquals(mode, config.getToolMergeMode());
         }
+    }
+
+    @Test
+    void testTerminateOnClientDisconnectDefault() {
+        AguiAdapterConfig config = AguiAdapterConfig.builder().build();
+        assertTrue(config.isTerminateOnClientDisconnect());
+    }
+
+    @Test
+    void testTerminateOnClientDisconnectDisabled() {
+        AguiAdapterConfig config =
+                AguiAdapterConfig.builder().terminateOnClientDisconnect(false).build();
+        assertFalse(config.isTerminateOnClientDisconnect());
+    }
+
+    @Test
+    void testTerminateOnClientDisconnectEnabled() {
+        AguiAdapterConfig config =
+                AguiAdapterConfig.builder().terminateOnClientDisconnect(true).build();
+        assertTrue(config.isTerminateOnClientDisconnect());
     }
 }

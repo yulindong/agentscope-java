@@ -85,6 +85,7 @@ public class AgentscopeAguiWebFluxAutoConfiguration {
                         .emitToolCallArgs(props.isEmitToolCallArgs())
                         .enableReasoning(props.isEnableReasoning())
                         .defaultAgentId(props.getDefaultAgentId())
+                        .terminateOnClientDisconnect(props.isTerminateOnClientDisconnect())
                         .build();
 
         return AguiWebFluxHandler.builder()

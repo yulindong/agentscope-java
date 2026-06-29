@@ -73,8 +73,11 @@ public class AguiWebFluxHandler {
     private final AguiRequestProcessor processor;
     private final AguiEventEncoder encoder;
     private final String agentIdHeader;
+    private final boolean terminateOnClientDisconnect;
 
     private AguiWebFluxHandler(Builder builder) {
+        AguiAdapterConfig resolvedConfig =
+                builder.config != null ? builder.config : AguiAdapterConfig.defaultConfig();
         this.processor =
                 AguiRequestProcessor.builder()
                         .agentResolver(
@@ -83,14 +86,12 @@ public class AguiWebFluxHandler {
                                         .sessionManager(builder.sessionManager)
                                         .serverSideMemory(builder.serverSideMemory)
                                         .build())
-                        .config(
-                                builder.config != null
-                                        ? builder.config
-                                        : AguiAdapterConfig.defaultConfig())
+                        .config(resolvedConfig)
                         .build();
         this.encoder = new AguiEventEncoder();
         this.agentIdHeader =
                 builder.agentIdHeader != null ? builder.agentIdHeader : DEFAULT_AGENT_ID_HEADER;
+        this.terminateOnClientDisconnect = resolvedConfig.isTerminateOnClientDisconnect();
     }
 
     /**
@@ -145,14 +146,22 @@ public class AguiWebFluxHandler {
                                             ServerSentEvent.<String>builder()
                                                     .data(encoder.encodeToJson(event).trim())
                                                     .build())
-                            // When client closes connection (cancels stream), interrupt the agent
+                            // When client closes connection (cancels stream),
+                            // optionally interrupt the agent based on config
                             .doOnCancel(
                                     () -> {
-                                        logger.info(
-                                                "SSE stream cancelled for run {}, interrupting"
-                                                        + " agent",
-                                                runId);
-                                        result.agent().interrupt();
+                                        if (terminateOnClientDisconnect) {
+                                            logger.info(
+                                                    "SSE stream cancelled for run {},"
+                                                            + " interrupting agent",
+                                                    runId);
+                                            result.agent().interrupt();
+                                        } else {
+                                            logger.info(
+                                                    "SSE stream cancelled for run {},"
+                                                            + " agent continues execution",
+                                                    runId);
+                                        }
                                     });
 
             return ServerResponse.ok()
