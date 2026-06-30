@@ -56,7 +56,7 @@ import java.util.Map;
  *   <li>ToolResult* → TOOL_CALL_RESULT (accumulates deltas)</li>
  *   <li>AgentStart → RUN_STARTED</li>
  *   <li>AgentEnd → RUN_FINISHED</li>
- *   <li>RequireUserConfirm → RUN_FINISHED with interrupt outcome</li>
+ *   <li>RequireUserConfirm → builds interrupt outcome, deferred to AgentEnd</li>
  * </ul>
  */
 public class AguiEventConverter {
@@ -65,6 +65,10 @@ public class AguiEventConverter {
 
     // Accumulates ToolResultTextDelta deltas per toolCallId across sequential events
     private final Map<String, StringBuilder> toolResultAccumulators = new HashMap<>();
+
+    // Holds a pending RunFinishedOutcome built from RequireUserConfirmEvent,
+    // to be attached to the next AgentEndEvent's RunFinished
+    private RunFinishedOutcome pendingOutcome;
 
     public AguiEventConverter(AguiAdapterConfig config) {
         this.config = config;
@@ -131,7 +135,9 @@ public class AguiEventConverter {
     }
 
     private List<AguiEvent> convertAgentEnd(AgentEndEvent e, String threadId, String runId) {
-        return List.of(new AguiEvent.RunFinished(threadId, runId));
+        RunFinishedOutcome outcome = pendingOutcome;
+        pendingOutcome = null;
+        return List.of(new AguiEvent.RunFinished(threadId, runId, null, outcome));
     }
 
     // ==================== Text message events ====================
@@ -249,6 +255,27 @@ public class AguiEventConverter {
 
     // ==================== HITL events ====================
 
+    /**
+     * JSON Schema describing the expected payload format for HITL resume responses.
+     *
+     * <p>Clients should send {@code {"confirmed": true}} to approve or
+     * {@code {"confirmed": false}} to deny. The schema is included in each
+     * {@link InterruptItem} so that AG-UI clients know how to structure the
+     * resume payload.
+     */
+    private static final Map<String, Object> CONFIRM_RESPONSE_SCHEMA =
+            Map.of(
+                    "type", "object",
+                    "properties",
+                            Map.of(
+                                    "confirmed",
+                                    Map.of(
+                                            "type",
+                                            "boolean",
+                                            "description",
+                                            "Whether the user confirms the tool" + " execution")),
+                    "required", List.of("confirmed"));
+
     private List<AguiEvent> convertRequireUserConfirm(
             RequireUserConfirmEvent e, String threadId, String runId) {
         List<InterruptItem> interrupts = new ArrayList<>();
@@ -260,7 +287,7 @@ public class AguiEventConverter {
                                 "tool_call",
                                 "Tool requires confirmation: " + tc.getName(),
                                 tc.getId(),
-                                null,
+                                CONFIRM_RESPONSE_SCHEMA,
                                 null,
                                 null));
             }
@@ -273,13 +300,12 @@ public class AguiEventConverter {
                             "input_required",
                             "User confirmation required for tool execution",
                             null,
-                            null,
+                            CONFIRM_RESPONSE_SCHEMA,
                             null,
                             null));
         }
-        return List.of(
-                new AguiEvent.RunFinished(
-                        threadId, runId, null, new RunFinishedOutcome.Interrupt(interrupts)));
+        pendingOutcome = new RunFinishedOutcome.Interrupt(interrupts);
+        return List.of();
     }
 
     // ==================== Informational events ====================
@@ -316,10 +342,11 @@ public class AguiEventConverter {
     }
 
     /**
-     * Resets the internal tool result accumulator state.
+     * Resets the internal state (tool result accumulators and pending outcome).
      * Call this between runs to ensure clean state.
      */
     public void reset() {
         toolResultAccumulators.clear();
+        pendingOutcome = null;
     }
 }

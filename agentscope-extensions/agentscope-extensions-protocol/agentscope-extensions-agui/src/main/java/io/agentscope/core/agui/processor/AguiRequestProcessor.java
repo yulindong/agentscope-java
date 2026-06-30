@@ -114,8 +114,13 @@ public class AguiRequestProcessor {
         }
 
         // Create adapter and run
-        AguiAgentAdapter adapter = new AguiAgentAdapter(agent, config);
-        Flux<AguiEvent> events = adapter.run(effectiveInput);
+        Flux<AguiEvent> events;
+        if (effectiveInput.hasResume()) {
+            events = AguiAgentAdapter.runWithResume(effectiveInput, config, agent);
+        } else {
+            AguiAgentAdapter adapter = new AguiAgentAdapter(agent, config);
+            events = adapter.run(effectiveInput);
+        }
 
         return new ProcessResult(agent, events);
     }
@@ -206,6 +211,7 @@ public class AguiRequestProcessor {
                 .tools(input.getTools())
                 .context(input.getContext())
                 .forwardedProps(input.getForwardedProps())
+                .resume(input.getResume())
                 .build();
     }
 

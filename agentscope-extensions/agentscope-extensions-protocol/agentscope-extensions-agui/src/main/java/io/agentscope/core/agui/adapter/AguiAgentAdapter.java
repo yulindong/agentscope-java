@@ -23,10 +23,15 @@ import io.agentscope.core.agui.converter.AguiMessageConverter;
 import io.agentscope.core.agui.event.AguiEvent;
 import io.agentscope.core.agui.event.AguiEvent.RunFinishedOutcome;
 import io.agentscope.core.agui.model.AguiMessage;
+import io.agentscope.core.agui.model.ResumeItem;
 import io.agentscope.core.agui.model.RunAgentInput;
 import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.message.ToolCallState;
+import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.state.AgentState;
 import io.agentscope.core.util.JsonUtils;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -102,6 +107,10 @@ public class AguiAgentAdapter {
      * @return A Flux of AG-UI events
      */
     public Flux<AguiEvent> run(RunAgentInput input) {
+        return run(input, List.of());
+    }
+
+    private Flux<AguiEvent> run(RunAgentInput input, List<Msg> syntheticMessages) {
         String threadId = input.getThreadId();
         String runId = input.getRunId();
 
@@ -117,8 +126,21 @@ public class AguiAgentAdapter {
                                         input, runtimeContext, threadId, runId);
                             }
 
-                            // Convert AG-UI messages to AgentScope messages
-                            List<Msg> msgs = messageConverter.toMsgList(input.getMessages());
+                            // Convert AG-UI messages to AgentScope messages and prepend any
+                            // synthetic messages (e.g. HITL resume confirmations)
+                            List<Msg> convertedMessages =
+                                    messageConverter.toMsgList(input.getMessages());
+                            List<Msg> msgs;
+                            if (syntheticMessages == null || syntheticMessages.isEmpty()) {
+                                msgs = convertedMessages;
+                            } else {
+                                msgs =
+                                        new ArrayList<>(
+                                                syntheticMessages.size()
+                                                        + convertedMessages.size());
+                                msgs.addAll(syntheticMessages);
+                                msgs.addAll(convertedMessages);
+                            }
 
                             // Create the event converter for this run
                             AguiEventConverter converter = new AguiEventConverter(config);
@@ -279,14 +301,9 @@ public class AguiAgentAdapter {
     /**
      * Create a resume-aware run for HITL (Human-in-the-Loop) scenarios.
      *
-     * <p>This method handles the full lifecycle of an agent run that may
-     * be interrupted for user confirmation. It:
-     * <ol>
-     *   <li>Checks for resume items in the input</li>
-     *   <li>Injects resume data as UserConfirmResultEvent or
-     *       ExternalExecutionResultEvent signals into the agent context</li>
-     *   <li>Resumes the agent execution</li>
-     * </ol>
+     * <p>This method translates AG-UI {@link ResumeItem}s into AgentScope
+     * {@link ConfirmResult}s and injects them as a synthetic user message
+     * so that the agent can continue past a permission confirmation pause.
      *
      * @param input  The run input with optional resume data
      * @param config The adapter configuration
@@ -296,33 +313,241 @@ public class AguiAgentAdapter {
     public static Flux<AguiEvent> runWithResume(
             RunAgentInput input, AguiAdapterConfig config, Agent agent) {
 
-        String threadId = input.getThreadId();
-        String runId = input.getRunId();
+        AguiAgentAdapter adapter = new AguiAgentAdapter(agent, config);
+        RuntimeContext runtimeContext = adapter.buildRuntimeContext(input);
 
-        // If there's resume data, emit it as context events before agent execution
-        List<AguiEvent> resumeEvents = new ArrayList<>();
+        // Build ConfirmResults from the persisted ASKING tool calls that match the
+        // interrupt IDs supplied by the client.
+        List<ConfirmResult> confirmResults = List.of();
         if (input.getResume() != null && !input.getResume().isEmpty()) {
-            for (var resumeItem : input.getResume()) {
-                resumeEvents.add(
-                        new AguiEvent.Raw(
-                                threadId,
-                                runId,
-                                Map.of(
-                                        "type", "resume",
-                                        "interruptId", resumeItem.interruptId(),
-                                        "status", resumeItem.status(),
-                                        "payload", resumeItem.payload()),
-                                "agentscope"));
+            AgentState agentState = adapter.getAgentState(runtimeContext);
+            confirmResults = buildConfirmResults(input.getResume(), agentState);
+        }
+
+        if (confirmResults.isEmpty()) {
+            return adapter.run(input);
+        }
+
+        Msg confirmMsg =
+                Msg.builder()
+                        .role(MsgRole.USER)
+                        .textContent("[resume]")
+                        .metadata(Map.of(Msg.METADATA_CONFIRM_RESULTS, confirmResults))
+                        .build();
+        return adapter.run(input, List.of(confirmMsg));
+    }
+
+    /**
+     * Build {@link ConfirmResult}s from AG-UI resume items by looking up the matching
+     * pending ASKING tool call in the persisted {@link AgentState}.
+     */
+    private static List<ConfirmResult> buildConfirmResults(
+            List<ResumeItem> resumeItems, AgentState agentState) {
+        if (agentState == null || agentState.getContext() == null) {
+            return List.of();
+        }
+
+        List<ConfirmResult> results = new ArrayList<>();
+        for (ResumeItem item : resumeItems) {
+            ToolUseBlock toolCall = findAskingToolCall(item.interruptId(), agentState);
+            if (toolCall == null) {
+                logger.warn(
+                        "Could not find pending ASKING tool call for interruptId {},"
+                                + " skipping resume item",
+                        item.interruptId());
+                continue;
+            }
+            boolean confirmed = isConfirmed(item);
+            results.add(new ConfirmResult(confirmed, toolCall));
+        }
+        return results;
+    }
+
+    /**
+     * Determine whether a resume item represents a confirmation (user approved).
+     *
+     * <p>The method tries to extract a boolean decision from the resume item in
+     * decreasing order of specificity:
+     * <ol>
+     *   <li><b>Boolean payload</b> — {@code true} / {@code false} directly.</li>
+     *   <li><b>Map payload</b> — looks for a confirmation value under common keys
+     *       ({@code confirmed}, {@code approved}, {@code accepted}, {@code allow},
+     *       {@code result}). The value may be a {@link Boolean}, a number
+     *       (non-zero = true), or a string that can be parsed as affirmative /
+     *       negative (e.g. {@code "true"}, {@code "yes"}, {@code "同意"}).</li>
+     *   <li><b>String payload</b> — parsed as an affirmative / negative text
+     *       response (e.g. {@code "true"}, {@code "yes"}, {@code "同意"},
+     *       {@code "拒绝"}).</li>
+     *   <li><b>Fallback: status field</b> — {@code "resolved"} means the user
+     *       responded (treated as confirmed); any other value (including
+     *       {@code "cancelled"}) is treated as denied.</li>
+     * </ol>
+     *
+     * <p>This lenient parsing is necessary because the AG-UI interrupt protocol
+     * allows free-form payloads, and different clients may express the same
+     * intent in different ways.
+     */
+    private static boolean isConfirmed(ResumeItem item) {
+        Object payload = item.payload();
+
+        // 1. Boolean payload — direct confirmation / denial
+        if (payload instanceof Boolean b) {
+            return b;
+        }
+
+        // 2. Map payload — try common confirmation keys
+        if (payload instanceof Map<?, ?> map) {
+            Boolean result = extractConfirmationFromMap(map);
+            if (result != null) {
+                return result;
+            }
+            // Map present but no recognizable confirmation key — fall through
+        }
+
+        // 3. String payload — interpret as affirmative / negative text
+        if (payload instanceof String s) {
+            Boolean result = parseAffirmativeText(s);
+            if (result != null) {
+                return result;
+            }
+            // Unrecognized string — fall through
+        }
+
+        // 4. Fallback: status field
+        // "resolved" = user responded → confirmed
+        // "cancelled" or anything else → denied (safe default)
+        return "resolved".equalsIgnoreCase(item.status());
+    }
+
+    /**
+     * Try to extract a boolean confirmation from a map payload by checking common
+     * confirmation keys. Returns {@code null} if no key yields a recognisable
+     * boolean value.
+     */
+    private static Boolean extractConfirmationFromMap(Map<?, ?> map) {
+        // Canonical key first, then common alternatives
+        for (String key :
+                new String[] {"confirmed", "approved", "accepted", "accept", "allow", "result"}) {
+            Object value = map.get(key);
+            Boolean parsed = toBoolean(value);
+            if (parsed != null) {
+                return parsed;
             }
         }
+        return null;
+    }
 
-        if (!resumeEvents.isEmpty()) {
-            return Flux.concat(
-                    Flux.fromIterable(resumeEvents),
-                    new AguiAgentAdapter(agent, config).run(input));
+    /**
+     * Convert an arbitrary object to a {@link Boolean}, returning {@code null} if
+     * the value cannot be interpreted as a boolean.
+     *
+     * <ul>
+     *   <li>{@link Boolean} — returned directly.</li>
+     *   <li>{@link String} — parsed as affirmative / negative text.</li>
+     *   <li>{@link Number} — non-zero means true, zero means false.</li>
+     * </ul>
+     */
+    private static Boolean toBoolean(Object value) {
+        if (value instanceof Boolean b) {
+            return b;
         }
+        if (value instanceof String s) {
+            return parseAffirmativeText(s);
+        }
+        if (value instanceof Number n) {
+            return n.doubleValue() != 0;
+        }
+        return null;
+    }
 
-        return new AguiAgentAdapter(agent, config).run(input);
+    /**
+     * Parse a free-form text string as an affirmative or negative response.
+     *
+     * <p>Supports common English and Chinese affirmative / negative words:
+     * <ul>
+     *   <li>Affirmative: {@code true}, {@code yes}, {@code y}, {@code ok},
+     *       {@code agree}, {@code confirmed}, {@code approve(d)},
+     *       {@code accept(ed)}, {@code allow}, {@code proceed},
+     *       {@code continue}, {@code 同意}, {@code 确认}, {@code 允许},
+     *       {@code 批准}, {@code 通过}</li>
+     *   <li>Negative: {@code false}, {@code no}, {@code n}, {@code deny/denied},
+     *       {@code reject/rejected}, {@code cancel/cancelled},
+     *       {@code refuse}, {@code decline},
+     *       {@code 拒绝}, {@code 否决}, {@code 取消}</li>
+     * </ul>
+     *
+     * @return {@code Boolean.TRUE} for affirmative, {@code Boolean.FALSE} for
+     *     negative, or {@code null} if the text is not recognisable.
+     */
+    private static Boolean parseAffirmativeText(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        String lower = text.trim().toLowerCase();
+        // Affirmative responses (English + Chinese)
+        if (lower.equals("true")
+                || lower.equals("yes")
+                || lower.equals("y")
+                || lower.equals("ok")
+                || lower.equals("agree")
+                || lower.equals("confirmed")
+                || lower.equals("confirm")
+                || lower.equals("approve")
+                || lower.equals("approved")
+                || lower.equals("accept")
+                || lower.equals("accepted")
+                || lower.equals("allow")
+                || lower.equals("grant")
+                || lower.equals("proceed")
+                || lower.equals("continue")
+                || lower.equals("同意")
+                || lower.equals("确认")
+                || lower.equals("允许")
+                || lower.equals("批准")
+                || lower.equals("通过")) {
+            return Boolean.TRUE;
+        }
+        // Negative responses (English + Chinese)
+        if (lower.equals("false")
+                || lower.equals("no")
+                || lower.equals("n")
+                || lower.equals("deny")
+                || lower.equals("denied")
+                || lower.equals("reject")
+                || lower.equals("rejected")
+                || lower.equals("cancel")
+                || lower.equals("cancelled")
+                || lower.equals("refuse")
+                || lower.equals("decline")
+                || lower.equals("拒绝")
+                || lower.equals("否决")
+                || lower.equals("取消")) {
+            return Boolean.FALSE;
+        }
+        return null;
+    }
+
+    /**
+     * Find the pending ASKING {@link ToolUseBlock} with the given tool call ID in the
+     * agent's persisted context.
+     */
+    private static ToolUseBlock findAskingToolCall(String toolCallId, AgentState agentState) {
+        if (toolCallId == null || agentState.getContext() == null) {
+            return null;
+        }
+        for (Msg msg : agentState.getContext()) {
+            if (msg == null || msg.getContent() == null) {
+                continue;
+            }
+            for (var block : msg.getContent()) {
+                if (block instanceof ToolUseBlock toolCall
+                        && toolCallId.equals(toolCall.getId())
+                        && toolCall.getState() == ToolCallState.ASKING) {
+                    return toolCall;
+                }
+            }
+        }
+        return null;
     }
 
     /**

@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.agentscope.core.ReActAgent;
@@ -32,11 +33,15 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.agent.StreamOptions;
 import io.agentscope.core.agui.event.AguiEvent;
 import io.agentscope.core.agui.model.AguiMessage;
+import io.agentscope.core.agui.model.ResumeItem;
 import io.agentscope.core.agui.model.RunAgentInput;
+import io.agentscope.core.event.AgentEndEvent;
+import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ThinkingBlock;
+import io.agentscope.core.message.ToolCallState;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.state.AgentState;
@@ -44,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
 
@@ -1783,5 +1789,60 @@ class AguiAgentAdapterTest {
         assertTrue(
                 !hasReasoningMessageStart,
                 "Should NOT have ReasoningMessageStart for null thinking");
+    }
+
+    @Test
+    void testRunWithResumeInjectsConfirmResultMetadata() {
+        // Given a ReActAgent with a pending ASKING tool call in its state
+        ReActAgent reactAgent = mock(ReActAgent.class);
+        String toolCallId = "call_419a2a62ba034a59931bfaab";
+        ToolUseBlock askingTool =
+                ToolUseBlock.builder()
+                        .id(toolCallId)
+                        .name("loadDictTables")
+                        .input(Map.of())
+                        .state(ToolCallState.ASKING)
+                        .build();
+        AgentState agentState =
+                AgentState.builder()
+                        .context(
+                                List.of(
+                                        Msg.builder()
+                                                .id("msg-1")
+                                                .role(MsgRole.ASSISTANT)
+                                                .content(askingTool)
+                                                .build()))
+                        .build();
+        when(reactAgent.getAgentState(any(RuntimeContext.class))).thenReturn(agentState);
+        when(reactAgent.streamEvents(anyList(), any(RuntimeContext.class)))
+                .thenReturn(Flux.just(new AgentEndEvent("reply-1")));
+
+        RunAgentInput input =
+                RunAgentInput.builder()
+                        .threadId("thread-1")
+                        .runId("run-1")
+                        .resume(List.of(new ResumeItem(toolCallId, "resolved")))
+                        .build();
+
+        List<AguiEvent> events =
+                AguiAgentAdapter.runWithResume(input, AguiAdapterConfig.defaultConfig(), reactAgent)
+                        .collectList()
+                        .block();
+
+        assertNotNull(events);
+
+        // Verify the synthetic resume message carried ConfirmResults to the agent
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Msg>> msgsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(reactAgent).streamEvents(msgsCaptor.capture(), any(RuntimeContext.class));
+        List<Msg> captured = msgsCaptor.getValue();
+        assertEquals(1, captured.size());
+        Object rawResults = captured.get(0).getMetadata().get(Msg.METADATA_CONFIRM_RESULTS);
+        assertInstanceOf(List.class, rawResults);
+        @SuppressWarnings("unchecked")
+        List<ConfirmResult> results = (List<ConfirmResult>) rawResults;
+        assertEquals(1, results.size());
+        assertTrue(results.get(0).isConfirmed());
+        assertEquals(toolCallId, results.get(0).getToolCall().getId());
     }
 }
