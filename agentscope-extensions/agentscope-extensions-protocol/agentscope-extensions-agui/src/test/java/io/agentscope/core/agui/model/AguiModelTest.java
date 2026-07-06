@@ -176,6 +176,69 @@ class AguiModelTest {
 
             assertNull(msg.getContent());
         }
+
+        @Test
+        void testUserMessageWithMultimodalContent() {
+            List<Map<String, Object>> content =
+                    List.of(
+                            Map.of("type", "text", "text", "Hello"),
+                            Map.of(
+                                    "type",
+                                    "image",
+                                    "source",
+                                    Map.of(
+                                            "type",
+                                            "url",
+                                            "value",
+                                            "https://example.com/image.png")));
+
+            AguiMessage msg = AguiMessage.userMessage("msg-1", content);
+
+            assertEquals("user", msg.getRole());
+            assertEquals(content, msg.getContent());
+            assertEquals(content, msg.getContentAsList());
+            assertNull(msg.getContentAsString());
+            assertTrue(msg.isUserMessage());
+        }
+
+        @Test
+        void testActivityMessageWithStructuredContent() {
+            Map<String, Object> content = Map.of("activityType", "PLAN", "steps", List.of("step1"));
+
+            AguiMessage msg = AguiMessage.activityMessage("msg-1", content);
+
+            assertEquals("activity", msg.getRole());
+            assertEquals(content, msg.getContent());
+            assertEquals(content, msg.getContentAsMap());
+            assertNull(msg.getContentAsString());
+            assertTrue(msg.isActivityMessage());
+        }
+
+        @Test
+        void testDeveloperMessageFactory() {
+            AguiMessage msg = AguiMessage.developerMessage("msg-1", "Debug info");
+
+            assertEquals("developer", msg.getRole());
+            assertEquals("Debug info", msg.getContentAsString());
+            assertTrue(msg.isDeveloperMessage());
+        }
+
+        @Test
+        void testReasoningMessageFactory() {
+            AguiMessage msg = AguiMessage.reasoningMessage("msg-1", "Thinking...");
+
+            assertEquals("reasoning", msg.getRole());
+            assertEquals("Thinking...", msg.getContentAsString());
+            assertTrue(msg.isReasoningMessage());
+        }
+
+        @Test
+        void testContentAsStringForNonStringContent() {
+            AguiMessage msg = AguiMessage.userMessage("msg-1", List.of(Map.of("type", "text")));
+
+            assertNull(msg.getContentAsString());
+            assertNotNull(msg.getContentAsList());
+        }
     }
 
     @Nested

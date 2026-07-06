@@ -24,11 +24,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.agentscope.core.agui.model.AguiFunctionCall;
 import io.agentscope.core.agui.model.AguiMessage;
 import io.agentscope.core.agui.model.AguiToolCall;
+import io.agentscope.core.message.AudioBlock;
+import io.agentscope.core.message.Base64Source;
+import io.agentscope.core.message.DataBlock;
+import io.agentscope.core.message.ImageBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.message.URLSource;
+import io.agentscope.core.message.VideoBlock;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -369,5 +375,222 @@ class AguiMessageConverterTest {
         assertNotNull(tub);
         // Invalid JSON should result in empty map
         assertTrue(tub.getInput().isEmpty());
+    }
+
+    @Test
+    void testConvertUserMessageWithMultimodalContent() {
+        List<Map<String, Object>> content =
+                List.of(
+                        Map.of("type", "text", "text", "What is in this image?"),
+                        Map.of(
+                                "type",
+                                "image",
+                                "source",
+                                Map.of("type", "url", "value", "https://example.com/image.png")),
+                        Map.of(
+                                "type",
+                                "audio",
+                                "source",
+                                Map.of(
+                                        "type",
+                                        "data",
+                                        "value",
+                                        "base64audio",
+                                        "mimeType",
+                                        "audio/wav")),
+                        Map.of(
+                                "type",
+                                "video",
+                                "source",
+                                Map.of("type", "url", "value", "https://example.com/video.mp4")),
+                        Map.of(
+                                "type",
+                                "document",
+                                "source",
+                                Map.of("type", "url", "value", "https://example.com/doc.pdf")));
+
+        AguiMessage aguiMsg = AguiMessage.userMessage("msg-multi", content);
+        Msg msg = converter.toMsg(aguiMsg);
+
+        assertEquals("msg-multi", msg.getId());
+        assertEquals(MsgRole.USER, msg.getRole());
+        assertTrue(msg.hasContentBlocks(TextBlock.class));
+        assertTrue(msg.hasContentBlocks(ImageBlock.class));
+        assertTrue(msg.hasContentBlocks(AudioBlock.class));
+        assertTrue(msg.hasContentBlocks(VideoBlock.class));
+        assertTrue(msg.hasContentBlocks(DataBlock.class));
+        assertEquals("What is in this image?", msg.getTextContent());
+    }
+
+    @Test
+    void testConvertMultimodalContentWithBase64Source() {
+        List<Map<String, Object>> content =
+                List.of(
+                        Map.of(
+                                "type",
+                                "image",
+                                "source",
+                                Map.of(
+                                        "type",
+                                        "data",
+                                        "value",
+                                        "base64data",
+                                        "mimeType",
+                                        "image/png")));
+
+        AguiMessage aguiMsg = AguiMessage.userMessage("msg-b64", content);
+        Msg msg = converter.toMsg(aguiMsg);
+
+        ImageBlock imageBlock = msg.getFirstContentBlock(ImageBlock.class);
+        assertNotNull(imageBlock);
+        assertTrue(imageBlock.getSource() instanceof io.agentscope.core.message.Base64Source);
+    }
+
+    @Test
+    void testConvertActivityMessageWithStructuredContent() {
+        Map<String, Object> content =
+                Map.of("activityType", "PLAN", "steps", List.of("step1", "step2"));
+
+        AguiMessage aguiMsg = AguiMessage.activityMessage("msg-act", content);
+        Msg msg = converter.toMsg(aguiMsg);
+
+        assertEquals("msg-act", msg.getId());
+        assertEquals(MsgRole.USER, msg.getRole());
+        // Activity payloads are frontend-only and should not be forwarded to the agent
+        assertTrue(msg.getContent().isEmpty());
+    }
+
+    @Test
+    void testConvertDeveloperMessageToSystemRole() {
+        AguiMessage aguiMsg = AguiMessage.developerMessage("msg-dev", "Developer instruction");
+        Msg msg = converter.toMsg(aguiMsg);
+
+        assertEquals("msg-dev", msg.getId());
+        assertEquals(MsgRole.SYSTEM, msg.getRole());
+        assertEquals("Developer instruction", msg.getTextContent());
+    }
+
+    @Test
+    void testConvertReasoningMessageToUserRoleFallback() {
+        AguiMessage aguiMsg = AguiMessage.reasoningMessage("msg-reason", "Reasoning chain");
+        Msg msg = converter.toMsg(aguiMsg);
+
+        assertEquals("msg-reason", msg.getId());
+        assertEquals(MsgRole.USER, msg.getRole());
+        assertEquals("Reasoning chain", msg.getTextContent());
+    }
+
+    @Test
+    void testConvertMsgWithImageBlockToAguiMessage() {
+        Msg msg =
+                Msg.builder()
+                        .id("msg-img")
+                        .role(MsgRole.USER)
+                        .content(
+                                List.of(
+                                        TextBlock.builder().text("What is this?").build(),
+                                        ImageBlock.builder()
+                                                .source(
+                                                        URLSource.builder()
+                                                                .url("https://example.com/img.png")
+                                                                .build())
+                                                .build()))
+                        .build();
+
+        AguiMessage aguiMsg = converter.toAguiMessage(msg);
+
+        assertEquals("msg-img", aguiMsg.getId());
+        assertEquals("user", aguiMsg.getRole());
+        // Content should be InputContent[] list because of multimodal blocks
+        assertTrue(aguiMsg.getContent() instanceof List<?>);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> contentList = (List<Map<String, Object>>) aguiMsg.getContent();
+        assertEquals(2, contentList.size());
+        // First entry: text
+        assertEquals("text", contentList.get(0).get("type"));
+        assertEquals("What is this?", contentList.get(0).get("text"));
+        // Second entry: image
+        assertEquals("image", contentList.get(1).get("type"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> source = (Map<String, Object>) contentList.get(1).get("source");
+        assertEquals("url", source.get("type"));
+        assertEquals("https://example.com/img.png", source.get("value"));
+    }
+
+    @Test
+    void testConvertMsgWithAllMultimodalBlocks() {
+        Msg msg =
+                Msg.builder()
+                        .id("msg-all")
+                        .role(MsgRole.USER)
+                        .content(
+                                List.of(
+                                        TextBlock.builder().text("Check these.").build(),
+                                        ImageBlock.builder()
+                                                .source(
+                                                        URLSource.builder()
+                                                                .url("https://example.com/img.png")
+                                                                .build())
+                                                .build(),
+                                        AudioBlock.builder()
+                                                .source(
+                                                        Base64Source.builder()
+                                                                .data("base64audio")
+                                                                .mediaType("audio/wav")
+                                                                .build())
+                                                .build(),
+                                        VideoBlock.builder()
+                                                .source(
+                                                        URLSource.builder()
+                                                                .url(
+                                                                        "https://example.com/video.mp4")
+                                                                .build())
+                                                .build(),
+                                        DataBlock.builder()
+                                                .source(
+                                                        URLSource.builder()
+                                                                .url("https://example.com/doc.pdf")
+                                                                .build())
+                                                .build()))
+                        .build();
+
+        AguiMessage aguiMsg = converter.toAguiMessage(msg);
+
+        assertTrue(aguiMsg.getContent() instanceof List<?>);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> contentList = (List<Map<String, Object>>) aguiMsg.getContent();
+        // 1 text + 4 multimodal = 5 entries
+        assertEquals(5, contentList.size());
+        assertEquals("text", contentList.get(0).get("type"));
+        assertEquals("image", contentList.get(1).get("type"));
+        assertEquals("audio", contentList.get(2).get("type"));
+        assertEquals("video", contentList.get(3).get("type"));
+        assertEquals("document", contentList.get(4).get("type"));
+
+        // Verify base64 source for audio
+        @SuppressWarnings("unchecked")
+        Map<String, Object> audioSource = (Map<String, Object>) contentList.get(2).get("source");
+        assertEquals("data", audioSource.get("type"));
+        assertEquals("base64audio", audioSource.get("value"));
+        assertEquals("audio/wav", audioSource.get("mimeType"));
+    }
+
+    @Test
+    void testConvertMsgWithOnlyTextBlocksProducesStringContent() {
+        Msg msg =
+                Msg.builder()
+                        .id("msg-text-only")
+                        .role(MsgRole.ASSISTANT)
+                        .content(
+                                List.of(
+                                        TextBlock.builder().text("Hello").build(),
+                                        TextBlock.builder().text("World").build()))
+                        .build();
+
+        AguiMessage aguiMsg = converter.toAguiMessage(msg);
+
+        // No multimodal blocks → content should be a plain string
+        assertTrue(aguiMsg.getContent() instanceof String);
+        assertEquals("Hello\nWorld", aguiMsg.getContent());
     }
 }

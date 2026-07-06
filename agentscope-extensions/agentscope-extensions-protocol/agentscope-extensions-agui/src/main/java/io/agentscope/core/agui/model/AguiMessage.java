@@ -20,6 +20,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -34,6 +35,16 @@ import java.util.Objects;
  *   <li>assistant - Messages from the AI assistant</li>
  *   <li>system - System instructions</li>
  *   <li>tool - Tool execution results</li>
+ *   <li>developer - Development or debugging messages</li>
+ *   <li>activity - Frontend-only structured UI messages</li>
+ *   <li>reasoning - Agent internal reasoning messages</li>
+ * </ul>
+ *
+ * <p>Content types:
+ * <ul>
+ *   <li>{@code string} - Plain text content (assistant, system, tool, developer, reasoning)</li>
+ *   <li>{@code InputContent[]} - Multimodal content for user messages (text, image, audio, video, document)</li>
+ *   <li>{@code Record<string, any>} - Structured payload for activity messages</li>
  * </ul>
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -41,7 +52,7 @@ public class AguiMessage {
 
     private final String id;
     private final String role;
-    private final String content;
+    private final Object content;
     private final List<AguiToolCall> toolCalls;
     private final String toolCallId;
 
@@ -49,8 +60,8 @@ public class AguiMessage {
      * Creates a new AguiMessage.
      *
      * @param id The unique message ID
-     * @param role The message role (user, assistant, system, tool)
-     * @param content The message content
+     * @param role The message role (user, assistant, system, tool, developer, activity, reasoning)
+     * @param content The message content ({@code String}, {@code List<?>} or {@code Map<?, ?>})
      * @param toolCalls Tool calls for assistant messages (optional)
      * @param toolCallId Tool call ID for tool messages (optional)
      */
@@ -58,7 +69,7 @@ public class AguiMessage {
     public AguiMessage(
             @JsonProperty("id") String id,
             @JsonProperty("role") String role,
-            @JsonProperty("content") String content,
+            @JsonProperty("content") Object content,
             @JsonProperty("toolCalls") List<AguiToolCall> toolCalls,
             @JsonProperty("toolCallId") String toolCallId) {
         this.id = Objects.requireNonNull(id, "id cannot be null");
@@ -72,13 +83,24 @@ public class AguiMessage {
     }
 
     /**
-     * Creates a simple user message.
+     * Creates a simple user message with text content.
      *
      * @param id The message ID
      * @param content The message content
      * @return A new user message
      */
     public static AguiMessage userMessage(String id, String content) {
+        return new AguiMessage(id, "user", content, null, null);
+    }
+
+    /**
+     * Creates a user message with multimodal content.
+     *
+     * @param id The message ID
+     * @param content The multimodal content fragments
+     * @return A new user message
+     */
+    public static AguiMessage userMessage(String id, List<?> content) {
         return new AguiMessage(id, "user", content, null, null);
     }
 
@@ -117,6 +139,39 @@ public class AguiMessage {
     }
 
     /**
+     * Creates a developer message.
+     *
+     * @param id The message ID
+     * @param content The message content
+     * @return A new developer message
+     */
+    public static AguiMessage developerMessage(String id, String content) {
+        return new AguiMessage(id, "developer", content, null, null);
+    }
+
+    /**
+     * Creates an activity message with a structured payload.
+     *
+     * @param id The message ID
+     * @param content The structured activity payload
+     * @return A new activity message
+     */
+    public static AguiMessage activityMessage(String id, Map<String, Object> content) {
+        return new AguiMessage(id, "activity", content, null, null);
+    }
+
+    /**
+     * Creates a reasoning message.
+     *
+     * @param id The message ID
+     * @param content The reasoning content
+     * @return A new reasoning message
+     */
+    public static AguiMessage reasoningMessage(String id, String content) {
+        return new AguiMessage(id, "reasoning", content, null, null);
+    }
+
+    /**
      * Get the message ID.
      *
      * @return The message ID
@@ -128,19 +183,55 @@ public class AguiMessage {
     /**
      * Get the message role.
      *
-     * @return The role (user, assistant, system, tool)
+     * @return The role (user, assistant, system, tool, developer, activity, reasoning)
      */
     public String getRole() {
         return role;
     }
 
     /**
-     * Get the message content.
+     * Get the raw message content.
+     *
+     * <p>According to the AG-UI specification, the content may be:
+     * <ul>
+     *   <li>{@code String} for plain text messages</li>
+     *   <li>{@code List<?>} for multimodal user message content</li>
+     *   <li>{@code Map<String, Object>} for structured activity payloads</li>
+     * </ul>
      *
      * @return The content, may be null
      */
-    public String getContent() {
+    public Object getContent() {
         return content;
+    }
+
+    /**
+     * Get the message content as a plain string.
+     *
+     * @return The content as a string, or null if the content is not a string or is null
+     */
+    public String getContentAsString() {
+        return content instanceof String ? (String) content : null;
+    }
+
+    /**
+     * Get the message content as a list.
+     *
+     * @return The content as a list, or null if the content is not a list
+     */
+    @SuppressWarnings("unchecked")
+    public List<Object> getContentAsList() {
+        return content instanceof List ? (List<Object>) content : null;
+    }
+
+    /**
+     * Get the message content as a map.
+     *
+     * @return The content as a map, or null if the content is not a map
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> getContentAsMap() {
+        return content instanceof Map ? (Map<String, Object>) content : null;
     }
 
     /**
@@ -195,6 +286,33 @@ public class AguiMessage {
      */
     public boolean isToolMessage() {
         return "tool".equals(role);
+    }
+
+    /**
+     * Check if this is a developer message.
+     *
+     * @return true if role is "developer"
+     */
+    public boolean isDeveloperMessage() {
+        return "developer".equals(role);
+    }
+
+    /**
+     * Check if this is an activity message.
+     *
+     * @return true if role is "activity"
+     */
+    public boolean isActivityMessage() {
+        return "activity".equals(role);
+    }
+
+    /**
+     * Check if this is a reasoning message.
+     *
+     * @return true if role is "reasoning"
+     */
+    public boolean isReasoningMessage() {
+        return "reasoning".equals(role);
     }
 
     /**

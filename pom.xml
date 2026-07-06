@@ -27,7 +27,7 @@
     <name>AgentScope Java - Parent</name>
 
     <properties>
-        <revision>2.0.0-RC4-vtradex</revision>
+        <revision>2.0.0-RC4-vtradex-SNAPSHOT</revision>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <java.version>17</java.version>
@@ -150,14 +150,14 @@
 
     <distributionManagement>
         <repository>
-            <id>sonatype-nexus-staging</id>
-            <name>Nexus Release Repository</name>
-            <url>https://oss.sonatype.org/service/local/staging/deploy/maven2/</url>
+            <id>vtradexnexus-releases</id>
+            <name>public</name>
+            <url>http://nexus.56linked.cn/nexus/content/repositories/releases/</url>
         </repository>
         <snapshotRepository>
-            <id>sonatype-nexus-snapshots</id>
-            <name>Sonatype Nexus Snapshots</name>
-            <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
+            <id>vtradexnexus-snapshots</id>
+            <name>Snapshots</name>
+            <url>http://nexus.56linked.cn/nexus/content/repositories/snapshots/</url>
         </snapshotRepository>
     </distributionManagement>
 
